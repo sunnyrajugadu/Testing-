@@ -357,6 +357,20 @@ def poster_high_res(url):
     return url
 
 
+def normalize_certificate(value):
+    value = clean_text(value, "")
+    if not value:
+        return ""
+    normalized = value.strip().upper()
+    aliases = {
+        "UA": "U/A",
+        "U.A.": "U/A",
+        "U A": "U/A",
+        "U/A": "U/A",
+    }
+    return aliases.get(normalized, value.strip())
+
+
 def make_hashtags(values):
     tags = []
     for value in values or []:
@@ -366,7 +380,7 @@ def make_hashtags(values):
         tag = re.sub(r"[^\w]+", "_", value, flags=re.UNICODE).strip("_")
         if tag:
             tags.append(f"#{tag}")
-    return " ".join(tags) if tags else "N/A"
+    return " ".join(tags) if tags else "Not Available"
 
 
 def names_from_json_value(value):
@@ -502,6 +516,49 @@ def extract_jsonld_details(blocks):
     return out
 
 
+def extract_jsonld_people(value):
+    people = []
+    items = value if isinstance(value, list) else [value]
+    for item in items:
+        if isinstance(item, dict):
+            name = item.get("name") or item.get("text")
+            url = item.get("url")
+            if name:
+                people.append({
+                    "name": str(name).strip(),
+                    "id": extract_id_from_url(url, "nm") if url else None,
+                })
+        elif isinstance(item, str) and item.strip():
+            people.append({"name": item.strip(), "id": None})
+    final, seen = [], set()
+    for person in people:
+        key = person["name"].casefold()
+        if key not in seen:
+            seen.add(key)
+            final.append(person)
+    return final
+
+
+def first_text(value):
+    if isinstance(value, str):
+        return value.strip() or None
+    if isinstance(value, dict):
+        for key in ("text", "name", "plainText", "value", "rating"):
+            val = value.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        for val in value.values():
+            found = first_text(val)
+            if found:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = first_text(item)
+            if found:
+                return found
+    return None
+
+
 # ============================================================
 # Small GraphQL calls only for reliable IMDb fields
 # ============================================================
@@ -534,6 +591,80 @@ async def imdb_graphql(query, variables=None):
         except Exception as exc:
             last_error = exc
     raise RuntimeError(f"IMDb GraphQL failed: {last_error}")
+
+
+IMDB_EXTENDED_QUERY = r'''
+query GetTitleExtended($id: ID!) {
+  title(id: $id) {
+    id
+    certificate {
+      rating
+      country { text }
+    }
+    certificates(first: 10) {
+      edges {
+        node {
+          rating
+          country { text }
+        }
+      }
+    }
+    principalCredits {
+      category { id text }
+      credits {
+        name {
+          id
+          nameText { text }
+        }
+      }
+    }
+    credits(first: 10, filter: { categories: ["director"] }) {
+      edges {
+        node {
+          name {
+            id
+            nameText { text }
+          }
+          category { id text }
+        }
+      }
+    }
+    spokenLanguages {
+      spokenLanguages(limit: 10) {
+        id
+        text
+      }
+    }
+    countriesOfOrigin {
+      countries {
+        id
+        text
+      }
+    }
+    akas(first: 10) {
+      edges {
+        node {
+          text
+          country { text }
+          language { text }
+        }
+      }
+    }
+  }
+}
+'''
+
+
+async def fetch_imdb_extended_graphql(imdb_id):
+    try:
+        payload = await imdb_graphql(IMDB_EXTENDED_QUERY, {"id": imdb_id})
+        title = ((payload.get("data") or {}).get("title"))
+        if not isinstance(title, dict):
+            return {}
+        return title
+    except Exception as exc:
+        print(f"IMDb Extended GraphQL Error [{imdb_id}]: {exc}", flush=True)
+        return {}
 
 
 IMDB_CORE_QUERY = r'''
@@ -759,7 +890,24 @@ async def fetch_full_movie_details(
         if jsonld.get("description"):
             data["storyline"] = clean_text(jsonld["description"], data["storyline"])
         if jsonld.get("contentRating"):
-            data["certificate"] = clean_text(jsonld["contentRating"], "") or None
+            certificate = jsonld["contentRating"]
+            if isinstance(certificate, list):
+                certificate = certificate[0] if certificate else None
+            if isinstance(certificate, dict):
+                certificate = certificate.get("rating") or certificate.get("name") or certificate.get("text")
+            if certificate:
+                data["certificate"] = clean_text(certificate, "") or None
+
+        # JSON-LD fallback for credits, languages, countries and alternate names.
+        if not data["director"] and jsonld.get("director"):
+            data["director"] = extract_jsonld_people(jsonld.get("director"))
+        if not data["languages"] and jsonld.get("inLanguage"):
+            data["languages"] = language_names(jsonld.get("inLanguage"))
+        if not data["countries"] and jsonld.get("countryOfOrigin"):
+            data["countries"] = country_names(jsonld.get("countryOfOrigin"))
+        if not data["aka"] and jsonld.get("alternateName"):
+            alt = jsonld.get("alternateName")
+            data["aka"] = unique_strings(alt if isinstance(alt, list) else [alt])[:8]
 
         aggregate = jsonld.get("aggregateRating") or {}
         if isinstance(aggregate, dict):
@@ -776,6 +924,23 @@ async def fetch_full_movie_details(
             page_props = (next_data.get("props") or {}).get("pageProps") or {}
             above = page_props.get("aboveTheFoldData") or {}
             main = page_props.get("mainColumnData") or {}
+            if not isinstance(main, dict):
+                main = {}
+
+            # IMDb occasionally moves these objects in its page payload.
+            # Keep the exact current paths first, then use recursive fallbacks.
+            principal_payload = main.get("principalCredits")
+            if not principal_payload:
+                principal_payload = deep_find(next_data, ["principalCredits"]) or []
+            spoken_payload = main.get("spokenLanguages")
+            if not spoken_payload:
+                spoken_payload = deep_find(next_data, ["spokenLanguages"]) or {}
+            countries_payload = main.get("countriesDetails") or main.get("countriesOfOrigin")
+            if not countries_payload:
+                countries_payload = deep_find(next_data, ["countriesDetails"]) or deep_find(next_data, ["countriesOfOrigin"]) or {}
+            aka_payload = main.get("akas")
+            if not aka_payload:
+                aka_payload = deep_find(next_data, ["akas"]) or {}
 
             title_text = (above.get("titleText") or {}).get("text")
             if title_text:
@@ -832,23 +997,41 @@ async def fetch_full_movie_details(
             if plot_text:
                 data["storyline"] = plot_text.strip()
 
-            certificate = (main.get("certificate") or {}).get("rating")
+            certificate_obj = main.get("certificate") or above.get("certificate") or {}
+            if isinstance(certificate_obj, dict):
+                certificate = certificate_obj.get("rating") or certificate_obj.get("text") or certificate_obj.get("name")
+            else:
+                certificate = certificate_obj
             if certificate:
-                data["certificate"] = certificate
+                data["certificate"] = str(certificate).strip()
 
-            directors = extract_principal_directors(main)
+            director_source = dict(main)
+            director_source["principalCredits"] = principal_payload
+            directors = extract_principal_directors(director_source)
             if directors:
                 data["director"] = directors
 
-            languages = extract_languages_from_page(main)
+            language_source = dict(main)
+            language_source["spokenLanguages"] = spoken_payload if isinstance(spoken_payload, dict) else {}
+            languages = extract_languages_from_page(language_source)
             if languages:
                 data["languages"] = languages
 
-            countries = extract_countries_from_page(main)
+            country_source = dict(main)
+            if isinstance(countries_payload, dict):
+                if countries_payload.get("countriesDetails"):
+                    country_source["countriesDetails"] = countries_payload.get("countriesDetails")
+                elif countries_payload.get("countriesOfOrigin"):
+                    country_source["countriesOfOrigin"] = countries_payload.get("countriesOfOrigin")
+                elif countries_payload.get("countries"):
+                    country_source["countriesDetails"] = countries_payload
+            countries = extract_countries_from_page(country_source)
             if countries:
                 data["countries"] = countries
 
-            akas = extract_akas_from_page(main, data["title"])
+            aka_source = dict(main)
+            aka_source["akas"] = aka_payload if isinstance(aka_payload, dict) else {}
+            akas = extract_akas_from_page(aka_source, data["title"])
             if akas:
                 data["aka"] = akas
 
@@ -907,6 +1090,72 @@ async def fetch_full_movie_details(
     data["countries"] = data["countries"] or []
     data["aka"] = data["aka"] or []
     data["poster"] = data["poster"] or None
+
+    # Final metadata fallback. These fields are queried independently from IMDb
+    # so a missing optional field can never erase the fields already collected.
+    extended = await fetch_imdb_extended_graphql(imdb_id)
+    if extended:
+        certificate_text = first_text(extended.get("certificate"))
+        if certificate_text:
+            data["certificate"] = certificate_text
+
+        if not data["director"]:
+            directors = []
+            for group in extended.get("principalCredits") or []:
+                category = group.get("category") or {}
+                if str(category.get("id", "")).lower() != "director" and "director" not in str(category.get("text", "")).lower():
+                    continue
+                for credit in group.get("credits") or []:
+                    name_obj = credit.get("name") or {}
+                    name_text = name_obj.get("nameText") or {}
+                    name = name_text.get("text")
+                    if name:
+                        directors.append({"name": name, "id": name_obj.get("id")})
+            for edge in ((extended.get("credits") or {}).get("edges") or []):
+                node = edge.get("node") or {}
+                name_obj = node.get("name") or {}
+                name_text = name_obj.get("nameText") or {}
+                name = name_text.get("text")
+                if name:
+                    directors.append({"name": name, "id": name_obj.get("id")})
+            unique_directors = []
+            seen_directors = set()
+            for person in directors:
+                key = person["name"].casefold()
+                if key not in seen_directors:
+                    seen_directors.add(key)
+                    unique_directors.append(person)
+            if unique_directors:
+                data["director"] = unique_directors
+
+        if not data["languages"]:
+            data["languages"] = unique_strings([
+                item.get("text") for item in
+                ((extended.get("spokenLanguages") or {}).get("spokenLanguages") or [])
+                if isinstance(item, dict) and item.get("text")
+            ])
+
+        if not data["countries"]:
+            data["countries"] = unique_strings([
+                item.get("text") for item in
+                ((extended.get("countriesOfOrigin") or {}).get("countries") or [])
+                if isinstance(item, dict) and item.get("text")
+            ])
+
+        if not data["aka"]:
+            aka_values = []
+            for edge in ((extended.get("akas") or {}).get("edges") or []):
+                node = edge.get("node") or {}
+                text = node.get("text")
+                if text and text.casefold() != str(data["title"]).casefold():
+                    aka_values.append(text)
+            data["aka"] = unique_strings(aka_values)[:8]
+
+    # Do not print the literal N/A for these fields. IMDb can genuinely omit
+    # metadata for some titles, so use a neutral label only as a last resort.
+    data["director"] = data["director"] or [{"name": "Not Available", "id": None}]
+    data["languages"] = data["languages"] or ["Not Available"]
+    data["countries"] = data["countries"] or ["Not Available"]
 
     trailer_query = quote_plus(f"{data['title']} {data['year']} official trailer")
     data["trailer_url"] = f"https://www.youtube.com/results?search_query={trailer_query}"
@@ -1012,12 +1261,17 @@ async def imdb_view_callback(client, query: CallbackQuery):
         if info["rating"] != "N/A":
             rating_disp = f"{html.escape(str(info['rating']))} / 10"
         else:
-            rating_disp = "N/A / 10"
+            rating_disp = "Not Available / 10"
 
-        if isinstance(info.get("vote_count"), int):
-            vote_disp = f" ({info['vote_count']:,} votes)"
-        else:
-            vote_disp = ""
+        vote_count = info.get("vote_count")
+        try:
+            vote_count = int(vote_count) if vote_count is not None else None
+        except (TypeError, ValueError):
+            vote_count = None
+        vote_disp = f" ({vote_count:,} votes)" if vote_count is not None else ""
+
+        certificate = normalize_certificate(info.get("certificate"))
+        certificate_disp = f" [{html.escape(certificate)}]" if certificate else ""
 
         title_link = (
             f'<a href="{info["imdb_url"]}">'
@@ -1047,10 +1301,10 @@ async def imdb_view_callback(client, query: CallbackQuery):
             )
 
         caption_lines.extend([
-            f"⭐ <b>IMDb Rating :</b> {rating_disp}{vote_disp}",
+            f"⭐ <b>IMDb Rating :</b> {rating_disp}{certificate_disp}{vote_disp}",
             f"🗓 <b>Release Info :</b> "
-            f"{html.escape(str(info['release_date']))}",
-            f"⏳ <b>Runtime :</b> {html.escape(str(info['runtime']))}",
+            f"{html.escape(str(info['release_date']) if info['release_date'] != 'N/A' else 'Not Available')}",
+            f"⏳ <b>Runtime :</b> {html.escape(str(info['runtime']) if info['runtime'] != 'N/A' else 'Not Available')}",
         ])
 
         directors = info.get("director") or []
