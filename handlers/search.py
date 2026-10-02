@@ -12,6 +12,7 @@ from pyrogram.types import (
 from bot import app
 from config import LOG_CHANNEL_ID
 from filters.fsub import enforce_fsub
+from utils.helpers import get_imdb_suggestions
 from database.models import (
     search_files,
     increase_search_count,
@@ -305,8 +306,35 @@ async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=
             )
         )
 
-        # ================= NO RESULTS ================= #
+        # ================= NO RESULTS (SPELLING SUGGESTIONS) ================= #
         if not results:
+            # IMDb suggestions theesukovadam
+            suggestions = await get_imdb_suggestions(movie_name, limit=10)
+
+            if suggestions:
+                suggestion_buttons = []
+                for title in suggestions:
+                    # Pyrogram callback limit 64 bytes kabatti slice chesthunnam
+                    cb_data = f"spell:{user_id}:{title[:45]}"
+                    suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
+
+                suggestion_buttons.append([InlineKeyboardButton("✖ CLOSE ✖", callback_data="close")])
+
+                reply_text = (
+                    f"🎀\n`{movie_name}`\n\n"
+                    "**Spelling Mistake Bro ‼️**\n\n"
+                    "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
+                )
+
+                await client.send_message(
+                    chat_id=chat_id,
+                    text=reply_text,
+                    reply_markup=InlineKeyboardMarkup(suggestion_buttons),
+                    reply_to_message_id=reply_to_message_id
+                )
+                return
+
+            # IMDb lo kuda em suggestions dorakkapothe fallback message
             no_result_message = await client.send_message(
                 chat_id=chat_id,
                 text=f"""
