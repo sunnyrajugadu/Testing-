@@ -132,7 +132,7 @@ def get_file_display_name(file):
 
 # ================= SMART DISTINCT MOVIE EXTRACTOR ================= #
 
-def clean_movie_base_title(raw_name: str) -> str:
+def clean_movie_base_title(raw_name: str, query: str = "") -> str:
     from utils.rename import clean_file_name
 
     title = clean_file_name(raw_name)
@@ -140,8 +140,12 @@ def clean_movie_base_title(raw_name: str) -> str:
     # 1. Strip URLs & domains
     title = re.sub(r"https?://\S+|www\.\S+|\b[a-zA-Z0-9_\-\.]+\.(com|org|net|in|top|click|link|xyz|site|fun|lol)\b", "", title, flags=re.IGNORECASE)
 
-    # 2. Strip telegram channel tags & prefixes
-    title = re.sub(r"\b(hollywoodtelugufiles|link\s*4u|tgbots|cinemaveta|mrDudeholic|cinemaghar|moviez|films)\b", "", title, flags=re.IGNORECASE)
+    # 2. Strip telegram channel handles / usernames / prefixes (e.g. Kumarvalimaiofcl)
+    if query:
+        q_clean = query.strip()
+        match = re.search(re.escape(q_clean), title, flags=re.IGNORECASE)
+        if match and match.start() > 0:
+            title = title[match.start():]
 
     # 3. Strip quality, years, codecs, audios, and resolutions
     title = re.split(r"\b(20\d\d|19\d\d|720p|1080p|480p|2160p|4k|hdrip|webrip|web-dl|dvdrip|prehd|cam|camrip|hdtc|hevc|x264|x265|aac|ac3|ddp|esub|vers?)\b", title, flags=re.IGNORECASE)[0]
@@ -150,8 +154,8 @@ def clean_movie_base_title(raw_name: str) -> str:
     title = re.sub(r"\b(telugu|tamil|hindi|english|malayalam|kannada|multi|dual\s*audio)\b", "", title, flags=re.IGNORECASE)
 
     # 5. Clean symbols & multiple spaces
-    title = re.sub(r"[_.\-+]+", " ", title)
-    title = re.sub(r"[^\w\s:]", "", title)
+    title = re.sub(r"[_.\-+:]+", " ", title)
+    title = re.sub(r"[^\w\s]", "", title)
     title = re.sub(r"\s+", " ", title).strip()
 
     return title
@@ -163,25 +167,30 @@ def extract_distinct_movies(files_list, search_query: str):
 
     for f in files_list:
         raw = f.get("movie_name") or f.get("file_name") or f.get("original_file_name") or ""
-        clean = clean_movie_base_title(raw)
+        clean = clean_movie_base_title(raw, query=search_query)
         if clean and len(clean) >= 3 and query_norm in clean.lower():
             raw_titles.append(clean)
 
     distinct = []
-    for cand in sorted(raw_titles, key=len):
+    for cand in sorted(raw_titles, key=len, reverse=True):
         cand_lower = cand.lower()
         matched = False
-        for idx, exist in enumerate(distinct):
+        for exist in distinct:
             exist_lower = exist.lower()
-            if cand_lower.startswith(exist_lower) or exist_lower.startswith(cand_lower):
-                if len(cand) < len(exist):
-                    distinct[idx] = cand
+            if cand_lower == exist_lower:
                 matched = True
                 break
         if not matched:
             distinct.append(cand)
 
-    return [d.title() for d in distinct]
+    final_titles = []
+    for title in distinct:
+        t_low = title.lower()
+        if t_low == query_norm and any(len(other) > len(query_norm) for other in distinct):
+            continue
+        final_titles.append(title.title())
+
+    return final_titles[::-1] if final_titles else [search_query.title()]
 
 
 # ================= SEARCH LOG ================= #
@@ -375,7 +384,7 @@ async def execute_search(
             if clean_name:
                 results = await search_files(clean_name)
 
-        # 2. Check if DB has multiple matching movies (e.g. Pushpa The Rise vs Pushpaka Vimanam)
+        # 2. Check if DB has multiple matching movies
         if results and allow_spelling_suggestions:
             distinct_db_movies = extract_distinct_movies(results, movie_name)
 
@@ -385,7 +394,7 @@ async def execute_search(
                 for title in distinct_db_movies[:8]:
                     buttons.append([
                         InlineKeyboardButton(
-                            f"🎬 {title}",
+                            title,
                             callback_data=f"spell:{user_id}:{title[:45]}"
                         )
                     ])
@@ -422,13 +431,14 @@ async def execute_search(
                 if suggestions:
                     suggestion_buttons = []
                     for title in suggestions:
-                        cb_data = f"spell:{user_id}:{title[:45]}"
-                        suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
+                        clean_disp = title.split("(")[0].strip() if "(" in title else title
+                        cb_data = f"spell:{user_id}:{clean_disp[:45]}"
+                        suggestion_buttons.append([InlineKeyboardButton(clean_disp, callback_data=cb_data)])
 
                     suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
 
                     reply_text = (
-                        f"🎀\n`{movie_name}`\n\n"
+                        f"`{movie_name}`\n\n"
                         "**Spelling Mistake Bro ‼️**\n\n"
                         "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
                     )
@@ -477,7 +487,7 @@ async def execute_search(
                 detected_audios.update([a.strip() for a in aud.split(",") if a.strip()])
         audio_str = ", ".join(list(detected_audios)[:4]) if detected_audios else "Multi"
 
-        # Build Direct IMDb Details Caption (Movie Request Line Removed)
+        # Direct IMDb Movie Details Caption (Movie Request Line Complete ga theesesam)
         caption_lines = []
 
         if movie_details and movie_details.get("title"):
@@ -652,7 +662,7 @@ async def search_movie_handler(
         if not await enforce_fsub(client, message, payload=movie_name):
             return
 
-        # Execute search
+        # Execute search with DB-only franchise suggestions
         await execute_search(
             client=client,
             user=message.from_user,
