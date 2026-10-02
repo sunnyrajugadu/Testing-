@@ -4,6 +4,7 @@ import html
 import re
 from datetime import datetime
 import uuid
+import aiohttp
 
 from pyrogram import filters
 from pyrogram.types import (
@@ -62,47 +63,42 @@ def format_size(size):
     return f"{size:.0f} B"
 
 
-# ================= FORMAT AUDIO ================= #
+# ================= EXTRACT AUDIO LANGUAGES ================= #
 
-def format_audio(audio):
-    if isinstance(audio, list):
-        values = [
-            str(item).strip()
-            for item in audio
-            if item
-            and str(item).strip().lower()
-            not in {
-                "unknown",
-                "none",
-                "null",
-                "n/a",
-                "na"
-            }
-        ]
+KNOWN_LANGS = {
+    "telugu": "Telugu",
+    "tamil": "Tamil",
+    "hindi": "Hindi",
+    "english": "English",
+    "malayalam": "Malayalam",
+    "kannada": "Kannada"
+}
 
-        if values:
-            return ", ".join(dict.fromkeys(values))
+def extract_file_languages(file):
+    """
+    Scans direct DB audio/language fields and file names to extract real language names.
+    """
+    found = set()
 
-        return ""
+    for key in ("audio", "languages", "language"):
+        val = file.get(key)
+        if isinstance(val, list):
+            for v in val:
+                v_str = str(v).strip().lower()
+                if v_str in KNOWN_LANGS:
+                    found.add(KNOWN_LANGS[v_str])
+        elif isinstance(val, str) and val:
+            for word, label in KNOWN_LANGS.items():
+                if re.search(rf"\b{word}\b", val, re.IGNORECASE):
+                    found.add(label)
 
-    if audio is None:
-        return ""
+    # Scan raw filename text
+    text_to_scan = f"{file.get('file_name', '')} {file.get('original_file_name', '')} {file.get('movie_name', '')}"
+    for word, label in KNOWN_LANGS.items():
+        if re.search(rf"\b{word}\b", text_to_scan, re.IGNORECASE):
+            found.add(label)
 
-    audio = str(audio).strip()
-
-    if not audio:
-        return ""
-
-    if audio.lower() in {
-        "unknown",
-        "none",
-        "null",
-        "n/a",
-        "na"
-    }:
-        return ""
-
-    return audio
+    return list(found)
 
 
 # ================= FILE DISPLAY NAME ================= #
@@ -140,7 +136,7 @@ def clean_movie_base_title(raw_name: str, query: str = "") -> str:
     # 1. Strip URLs & domains
     title = re.sub(r"https?://\S+|www\.\S+|\b[a-zA-Z0-9_\-\.]+\.(com|org|net|in|top|click|link|xyz|site|fun|lol)\b", "", title, flags=re.IGNORECASE)
 
-    # 2. Strip telegram channel handles / usernames / prefixes (e.g. Kumarvalimaiofcl)
+    # 2. Strip telegram channel tags & prefixes (e.g. Kumarvalimaiofcl, link 4u)
     if query:
         q_clean = query.strip()
         match = re.search(re.escape(q_clean), title, flags=re.IGNORECASE)
@@ -326,7 +322,7 @@ def pagination_buttons(
     if page > 1:
         row.append(
             InlineKeyboardButton(
-                "⬅️ Previous",
+                "⬅️️ Previous",
                 callback_data=(
                     f"page:"
                     f"{search_id}:"
@@ -476,18 +472,25 @@ async def execute_search(
         user_name = user.first_name or "User"
         user_mention = f'<a href="tg://user?id={user.id}"><b>{html.escape(user_name)}</b></a>'
 
-        # Fetch Landscape Movie Banner & Details from TMDB/IMDb
+        # Fetch Landscape Movie Banner & Details from TMDB
         movie_details = await get_imdb_movie_details(movie_name)
         landscape_banner_url = movie_details.get("image") if movie_details else None
 
+        # Detect and format Audio Languages
         detected_audios = set()
         for f in results:
-            aud = format_audio(f.get("audio"))
-            if aud:
-                detected_audios.update([a.strip() for a in aud.split(",") if a.strip()])
-        audio_str = ", ".join(list(detected_audios)[:4]) if detected_audios else "Multi"
+            langs = extract_file_languages(f)
+            detected_audios.update(langs)
 
-        # Direct IMDb Movie Details Caption (Movie Request Line Complete ga theesesam)
+        priority_order = ["Telugu", "Tamil", "Hindi", "English", "Malayalam", "Kannada"]
+        sorted_audios = [l for l in priority_order if l in detected_audios]
+        for l in detected_audios:
+            if l not in sorted_audios:
+                sorted_audios.append(l)
+
+        audio_str = ", ".join(sorted_audios) if sorted_audios else "Multi"
+
+        # Direct IMDb Movie Details Caption (No Movie Request line)
         caption_lines = []
 
         if movie_details and movie_details.get("title"):
@@ -572,7 +575,7 @@ async def execute_search(
 
         reply_markup = InlineKeyboardMarkup(buttons)
 
-        # ================= SEND ONLY LANDSCAPE BANNER ================= #
+        # ================= DISPATCH PHOTO BANNER ================= #
         sent_success = False
         if landscape_banner_url:
             try:
@@ -585,7 +588,22 @@ async def execute_search(
                 )
                 sent_success = True
             except Exception as pe:
-                print(f"⚠️ Landscape dispatch failed ({pe}), fallback to text...", flush=True)
+                print(f"⚠️ Landscape URL direct photo error ({pe}), attempting binary upload...", flush=True)
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(landscape_banner_url, timeout=aiohttp.ClientTimeout(total=4)) as img_resp:
+                            if img_resp.status == 200:
+                                img_bytes = await img_resp.read()
+                                await client.send_photo(
+                                    chat_id=chat_id,
+                                    photo=img_bytes,
+                                    caption=final_caption,
+                                    reply_markup=reply_markup,
+                                    reply_to_message_id=reply_to_message_id
+                                )
+                                sent_success = True
+                except Exception as b_err:
+                    print(f"⚠️ Binary photo fallback error: {b_err}", flush=True)
 
         if not sent_success:
             await client.send_message(
@@ -595,12 +613,12 @@ async def execute_search(
                 reply_to_message_id=reply_to_message_id
             )
 
-        print("✅ SEARCH RESULT SENT WITH DIRECT IMDB TITLE", flush=True)
+        print("✅ SEARCH RESULT SENT SUCCESSFULLY", flush=True)
 
     except Exception as e:
         print(f"❌ SEARCH ERROR : {e}", flush=True)
         try:
-            await client.send_message(chat_id, "⚠️️ Something went wrong.", reply_to_message_id=reply_to_message_id)
+            await client.send_message(chat_id, "⚠️ Something went wrong.", reply_to_message_id=reply_to_message_id)
         except Exception:
             pass
 
@@ -675,6 +693,6 @@ async def search_movie_handler(
     except Exception as e:
         print(f"❌ SEARCH HANDLER ERROR : {e}", flush=True)
         try:
-            await message.reply_text("⚠️ Something went wrong.", quote=True)
+            await message.reply_text("⚠️️ Something went wrong.", quote=True)
         except Exception:
             pass
