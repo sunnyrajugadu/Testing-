@@ -80,7 +80,7 @@ async def get_imdb_suggestions(query: str, limit: int = 10):
 
                     return titles
     except Exception as e:
-        print(f"IMDb Error: {e}")
+        print(f"IMDb Error: {e}", flush=True)
     return []
 
 
@@ -90,14 +90,15 @@ async def get_imdb_movie_details(query: str):
     Primary: TMDB API for high-resolution landscape backdrops.
     Fallback: OMDB / IMDb if TMDB data is unavailable.
     """
-    clean_q = normalize_text(query)
+    # Brackets lo unna year & extra symbols clean chesi pure movie name create cheyadam
+    clean_q = re.sub(r"\(\d{4}\)", "", query).strip()
+    clean_q = normalize_text(clean_q)
     if not clean_q:
         return None
 
     # Public TMDB v3 API Key for backdrop banners
     tmdb_key = "1bfb10531a5d5187e42a4019210f63d2"
-    tmdb_search_url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={clean_q}"
-
+    
     details = {
         "title": query.title(),
         "year": None,
@@ -109,54 +110,68 @@ async def get_imdb_movie_details(query: str):
 
     try:
         async with aiohttp.ClientSession() as session:
-            # 1. Fetch TMDB results to prioritize horizontal backdrops (Landscape)
-            async with session.get(tmdb_search_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+            # 1. Movie & Multi Search on TMDB
+            tmdb_movie_url = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={clean_q}&include_adult=false"
+            
+            async with session.get(tmdb_movie_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                results = []
                 if resp.status == 200:
                     t_data = await resp.json()
                     results = t_data.get("results", [])
-                    if results:
-                        # Backdrop_path unna movie ni landscape kosam filter chesthundhi
-                        landscape_item = next((r for r in results if r.get("backdrop_path")), results[0])
 
-                        title = landscape_item.get("title") or landscape_item.get("name") or query.title()
-                        release_date = landscape_item.get("release_date") or landscape_item.get("first_air_date") or ""
-                        year = release_date.split("-")[0] if release_date else None
-                        
-                        backdrop = landscape_item.get("backdrop_path")
-                        if backdrop:
-                            # 780px standard landscape banner
-                            details["image"] = f"https://image.tmdb.org/t/p/w780{backdrop}"
-                        
-                        details["title"] = title
-                        details["year"] = year
-                        vote = landscape_item.get("vote_average")
-                        if vote:
-                            details["rating"] = f"{vote:.1f}"
+                # Fallback to multi search if direct movie search is empty
+                if not results:
+                    tmdb_multi_url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={clean_q}"
+                    async with session.get(tmdb_multi_url, timeout=aiohttp.ClientTimeout(total=4)) as m_resp:
+                        if m_resp.status == 200:
+                            m_data = await m_resp.json()
+                            results = m_data.get("results", [])
 
-                        # Fetch Runtime and Genres from TMDB item details
-                        media_type = landscape_item.get("media_type", "movie")
-                        item_id = landscape_item.get("id")
-                        if item_id:
-                            info_url = f"https://api.themoviedb.org/3/{media_type}/{item_id}?api_key={tmdb_key}"
-                            try:
-                                async with session.get(info_url, timeout=aiohttp.ClientTimeout(total=3)) as info_resp:
-                                    if info_resp.status == 200:
-                                        info_data = await info_resp.json()
-                                        genres_list = [g.get("name") for g in info_data.get("genres", []) if g.get("name")]
-                                        if genres_list:
-                                            details["genres"] = ", ".join(genres_list[:3])
-                                        
-                                        runtime = info_data.get("runtime") or (info_data.get("episode_run_time") or [0])[0]
-                                        if runtime:
-                                            hours = runtime // 60
-                                            mins = runtime % 60
-                                            details["runtime"] = f"{hours}h {mins}m" if hours else f"{mins} min"
-                            except Exception:
-                                pass
+                if results:
+                    # Landscape backdrop unna item ni filter cheyadam
+                    landscape_item = next((r for r in results if r.get("backdrop_path")), results[0])
 
-                        return details
+                    title = landscape_item.get("title") or landscape_item.get("name") or query.title()
+                    release_date = landscape_item.get("release_date") or landscape_item.get("first_air_date") or ""
+                    year = release_date.split("-")[0] if release_date else None
+                    
+                    backdrop = landscape_item.get("backdrop_path")
+                    if backdrop:
+                        # 780px standard landscape banner
+                        details["image"] = f"https://image.tmdb.org/t/p/w780{backdrop}"
+                    elif landscape_item.get("poster_path"):
+                        details["image"] = f"https://image.tmdb.org/t/p/w780{landscape_item.get('poster_path')}"
+                    
+                    details["title"] = title
+                    details["year"] = year
+                    vote = landscape_item.get("vote_average")
+                    if vote:
+                        details["rating"] = f"{vote:.1f}"
+
+                    # Fetch Runtime and Genres from TMDB item details
+                    media_type = landscape_item.get("media_type", "movie")
+                    item_id = landscape_item.get("id")
+                    if item_id:
+                        info_url = f"https://api.themoviedb.org/3/{media_type}/{item_id}?api_key={tmdb_key}"
+                        try:
+                            async with session.get(info_url, timeout=aiohttp.ClientTimeout(total=3)) as info_resp:
+                                if info_resp.status == 200:
+                                    info_data = await info_resp.json()
+                                    genres_list = [g.get("name") for g in info_data.get("genres", []) if g.get("name")]
+                                    if genres_list:
+                                        details["genres"] = ", ".join(genres_list[:3])
+                                    
+                                    runtime = info_data.get("runtime") or (info_data.get("episode_run_time") or [0])[0]
+                                    if runtime:
+                                        hours = runtime // 60
+                                        mins = runtime % 60
+                                        details["runtime"] = f"{hours}h {mins}m" if hours else f"{mins} min"
+                        except Exception:
+                            pass
+
+                    return details
     except Exception as e:
-        print(f"TMDB Landscape Fetch Warning: {e}")
+        print(f"TMDB Landscape Fetch Warning: {e}", flush=True)
 
     # 2. Fallback to IMDb/OMDB metadata if TMDB fails completely
     try:
@@ -178,6 +193,8 @@ async def get_imdb_movie_details(query: str):
                         movie_id = movie_item.get("id")
                         details["title"] = movie_item.get("l") or details["title"]
                         details["year"] = movie_item.get("y") or details["year"]
+                        if not details["image"] and movie_item.get("i"):
+                            details["image"] = movie_item.get("i", {}).get("imageUrl")
 
                         api_url = f"https://www.omdbapi.com/?i={movie_id}&apikey=trilogy"
                         try:
@@ -191,6 +208,6 @@ async def get_imdb_movie_details(query: str):
                         except Exception:
                             pass
     except Exception as e:
-        print(f"IMDb Details Fallback Warning: {e}")
+        print(f"IMDb Details Fallback Warning: {e}", flush=True)
 
     return details
