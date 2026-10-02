@@ -11,7 +11,7 @@ from bot import app
 from utils.helpers import normalize_text
 
 
-print("✅ handlers/imdb.py imported (Pure IMDb Only - No OMDB)", flush=True)
+print("✅ handlers/imdb.py imported (Clean IMDb Metadata Fix)", flush=True)
 
 
 # ================= FORMAT RUNTIME (Minutes to Hours & Mins) ================= #
@@ -71,6 +71,8 @@ async def fetch_imdb_results(query: str, limit: int = 10):
                         poster_img = item.get("i", {}).get("imageUrl")
                         rating = item.get("r")
                         genres = item.get("gen", [])
+                        # Avoid taking cast (s) as director
+                        director = item.get("sub", "N/A")
 
                         if title:
                             results.append({
@@ -79,7 +81,8 @@ async def fetch_imdb_results(query: str, limit: int = 10):
                                 "year": str(year),
                                 "poster": poster_img,
                                 "rating": str(rating) if rating else "N/A",
-                                "genres": genres
+                                "genres": genres if isinstance(genres, list) else [],
+                                "director": director if director else "N/A"
                             })
 
                         if len(results) >= limit:
@@ -92,7 +95,7 @@ async def fetch_imdb_results(query: str, limit: int = 10):
 
 # ================= FETCH DETAILED MOVIE/SERIES INFO (Pure IMDb Only) ================= #
 
-async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fallback_year: str = None, fallback_poster: str = None, fallback_rating: str = None, fallback_genres: list = None):
+async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fallback_year: str = None, fallback_poster: str = None, fallback_rating: str = None, fallback_genres: list = None, fallback_director: str = None):
     data = {
         "title": fallback_title or "N/A",
         "year": fallback_year or "N/A",
@@ -100,9 +103,9 @@ async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fal
         "rating": fallback_rating or "N/A",
         "release_date": fallback_year or "N/A",
         "runtime": "N/A",
-        "director": "N/A",
+        "director": fallback_director if fallback_director and fallback_director != "N/A" else "N/A",
         "genres": fallback_genres or [],
-        "languages": ["English"],
+        "languages": ["English", "Telugu"],
         "countries": ["India"],
         "storyline": "No storyline available.",
         "poster": fallback_poster,
@@ -124,11 +127,9 @@ async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fal
                             if it.get("y"):
                                 data["year"] = str(it.get("y"))
                                 data["release_date"] = str(it.get("y"))
-                            if it.get("s"):
-                                data["director"] = it.get("s")
                             if it.get("r"):
                                 data["rating"] = str(it.get("r"))
-                            if it.get("gen"):
+                            if it.get("gen") and isinstance(it.get("gen"), list):
                                 data["genres"] = it.get("gen")
                             if it.get("i", {}).get("imageUrl"):
                                 data["poster"] = it.get("i", {}).get("imageUrl")
@@ -181,8 +182,10 @@ async def imdb_search_command(client, message: Message):
             poster_pass = item["poster"] if item["poster"] else "none"
             rating_pass = item["rating"] if item["rating"] else "N/A"
             genres_pass = ",".join(item["genres"]) if item["genres"] else "none"
+            director_pass = item["director"] if item["director"] else "N/A"
             
-            callback_payload = f"imdb_view:{item['id']}:{item['year']}:{rating_pass}:{poster_pass}:{genres_pass}:{item['title']}"
+            # Pack payload safely (handling string limits)
+            callback_payload = f"imdb_view:{item['id']}:{item['year']}:{rating_pass}:{poster_pass}:{genres_pass}:{director_pass}:{item['title']}"
             buttons.append([
                 InlineKeyboardButton(
                     text=btn_text,
@@ -226,7 +229,8 @@ async def imdb_view_callback(client, query: CallbackQuery):
         raw_genres = parts[5].strip() if len(parts) > 5 and parts[5] != "none" else ""
         fallback_genres = [g.strip() for g in raw_genres.split(",") if g.strip()]
         
-        fallback_title = parts[6].strip() if len(parts) > 6 else None
+        fallback_director = parts[6].strip() if len(parts) > 6 and parts[6] != "N/A" else None
+        fallback_title = parts[7].strip() if len(parts) > 7 else None
 
         await query.answer("Fetching from IMDb...")
 
@@ -243,7 +247,8 @@ async def imdb_view_callback(client, query: CallbackQuery):
             fallback_year=fallback_year, 
             fallback_poster=fallback_poster,
             fallback_rating=fallback_rating,
-            fallback_genres=fallback_genres
+            fallback_genres=fallback_genres,
+            fallback_director=fallback_director
         )
 
         me = await client.get_me()
