@@ -86,18 +86,17 @@ async def get_imdb_suggestions(query: str, limit: int = 10):
 
 async def get_imdb_movie_details(query: str):
     """
-    Fetches ONLY landscape (horizontal 16:9 banner) images, Title, Year, Rating, Genres, and Runtime.
-    Primary: TMDB API for high-resolution landscape backdrops.
-    Fallback: OMDB / IMDb if TMDB data is unavailable.
+    Fetches high-resolution landscape (16:9) banner image, Title, Year, Rating, Genres, and Runtime.
+    Uses personal TMDB API Key with smart landscape/backdrop fallback.
     """
-    # Brackets lo unna year & extra symbols clean chesi pure movie name create cheyadam
+    # Brackets lo unna year & extra tags clean chesi search cheyadam
     clean_q = re.sub(r"\(\d{4}\)", "", query).strip()
     clean_q = normalize_text(clean_q)
     if not clean_q:
         return None
 
-    # Public TMDB v3 API Key for backdrop banners
-    tmdb_key = "1bfb10531a5d5187e42a4019210f63d2"
+    # Mee personal TMDB v3 API Key
+    tmdb_key = "7f43669a428c09611a0518fa9c0bbddb"
     
     details = {
         "title": query.title(),
@@ -110,7 +109,7 @@ async def get_imdb_movie_details(query: str):
 
     try:
         async with aiohttp.ClientSession() as session:
-            # 1. Movie & Multi Search on TMDB
+            # 1. Direct Movie Search on TMDB
             tmdb_movie_url = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={clean_q}&include_adult=false"
             
             async with session.get(tmdb_movie_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
@@ -119,7 +118,7 @@ async def get_imdb_movie_details(query: str):
                     t_data = await resp.json()
                     results = t_data.get("results", [])
 
-                # Fallback to multi search if direct movie search is empty
+                # Fallback to multi-search if direct movie search is empty
                 if not results:
                     tmdb_multi_url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={clean_q}"
                     async with session.get(tmdb_multi_url, timeout=aiohttp.ClientTimeout(total=4)) as m_resp:
@@ -128,7 +127,7 @@ async def get_imdb_movie_details(query: str):
                             results = m_data.get("results", [])
 
                 if results:
-                    # Landscape backdrop unna item ni filter cheyadam
+                    # Landscape backdrop unna item ni first priority ivvadam
                     landscape_item = next((r for r in results if r.get("backdrop_path")), results[0])
 
                     title = landscape_item.get("title") or landscape_item.get("name") or query.title()
@@ -136,11 +135,13 @@ async def get_imdb_movie_details(query: str):
                     year = release_date.split("-")[0] if release_date else None
                     
                     backdrop = landscape_item.get("backdrop_path")
+                    poster = landscape_item.get("poster_path")
+
+                    # Primary: 16:9 Landscape Backdrop; Fallback: High-res Poster
                     if backdrop:
-                        # 780px standard landscape banner
                         details["image"] = f"https://image.tmdb.org/t/p/w780{backdrop}"
-                    elif landscape_item.get("poster_path"):
-                        details["image"] = f"https://image.tmdb.org/t/p/w780{landscape_item.get('poster_path')}"
+                    elif poster:
+                        details["image"] = f"https://image.tmdb.org/t/p/w780{poster}"
                     
                     details["title"] = title
                     details["year"] = year
@@ -148,7 +149,7 @@ async def get_imdb_movie_details(query: str):
                     if vote:
                         details["rating"] = f"{vote:.1f}"
 
-                    # Fetch Runtime and Genres from TMDB item details
+                    # Runtime and Genres
                     media_type = landscape_item.get("media_type", "movie")
                     item_id = landscape_item.get("id")
                     if item_id:
@@ -171,9 +172,9 @@ async def get_imdb_movie_details(query: str):
 
                     return details
     except Exception as e:
-        print(f"TMDB Landscape Fetch Warning: {e}", flush=True)
+        print(f"TMDB Fetch Error: {e}", flush=True)
 
-    # 2. Fallback to IMDb/OMDB metadata if TMDB fails completely
+    # 2. Fallback to IMDb/OMDB metadata if TMDB fails
     try:
         first_char = clean_q[0]
         sugg_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{clean_q}.json"
