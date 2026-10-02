@@ -461,93 +461,146 @@ def language_names(value):
 # ============================================================
 
 GOOGLE_SEARCH_URL = "https://www.google.com/search"
+TMDB_API_URL = "https://api.themoviedb.org/3"
+TMDB_KEY = "7f43669a428c09611a0518fa9c0bbddb"
 
 
-async def fetch_google_certificate(title, year=None):
-    """Fetch the movie certificate from Google's search result/knowledge panel.
+async def fetch_tmdb_cbfc_certificate(imdb_id, title=None, year=None):
+    """Fetch the India/CBFC certificate from TMDB using the IMDb ID.
 
-    IMDb can return a generic/empty certificate on some title pages. Google often
-    exposes the regional film certificate in its result data, so use it as a
-    certificate-only fallback without changing any other IMDb metadata.
+    TMDB maps the IMDb ID to its own movie ID through /find, then exposes
+    country-specific certifications through /movie/{id}/release_dates.
+    Only the India (IN) release certification is used here so the rest of
+    the IMDb metadata remains untouched.
     """
-    title = clean_text(title, "")
-    if not title:
+    if not imdb_id:
         return None
 
-    query = f'"{title}" {year or ""} certificate movie'.strip()
     params = {
-        "q": query,
-        "hl": "en",
-        "gl": "IN",
-        "num": "10",
+        "api_key": TMDB_KEY,
+        "external_source": "imdb_id",
     }
-    headers = dict(IMDB_HEADERS)
-    headers.update({
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Referer": "https://www.google.com/",
-    })
-
-    # Keep this intentionally narrow: these are certificate/classification
-    # values, not arbitrary numbers that may appear in a Google result.
-    certificate_pattern = re.compile(
-        r"(?:U\s*/\s*A|U\.\s*A\.|U\s*A|U|A|UA|PG-13|PG|G|NC-17|R|TV-MA|TV-14|TV-PG|TV-G|Not\s+Rated|Not\s+Rated|Unrated)",
-        re.I,
-    )
+    headers = {
+        "User-Agent": IMDB_HEADERS["User-Agent"],
+        "Accept": "application/json",
+    }
 
     try:
         async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT, headers=headers) as session:
-            async with session.get(GOOGLE_SEARCH_URL, params=params, allow_redirects=True) as response:
+            # 1) IMDb ID -> TMDB movie ID
+            find_url = f"{TMDB_API_URL}/find/{imdb_id}"
+            async with session.get(find_url, params=params) as response:
                 if response.status != 200:
+                    print(
+                        f"TMDB Find Certificate HTTP {response.status} [{imdb_id}]",
+                        flush=True,
+                    )
                     return None
-                raw = await response.text(errors="ignore")
+                find_data = await response.json(content_type=None)
 
-        if not raw:
+            movie_results = find_data.get("movie_results") or []
+            if not movie_results:
+                return None
+
+            # Prefer a result whose title/year agrees with IMDb when there are
+            # multiple matches; otherwise use the first TMDB movie result.
+            selected = None
+            target_title = str(title or "").strip().casefold()
+            target_year = str(year or "").strip()
+
+            for item in movie_results:
+                item_title = str(item.get("title") or item.get("original_title") or "").strip()
+                release_date = str(item.get("release_date") or "")
+                item_year = release_date[:4] if release_date else ""
+
+                title_match = target_title and (
+                    item_title.casefold() == target_title
+                    or str(item.get("original_title") or "").strip().casefold() == target_title
+                )
+                year_match = target_year and item_year == target_year
+
+                if title_match and (not target_year or year_match):
+                    selected = item
+                    break
+
+            if selected is None:
+                selected = movie_results[0]
+
+            tmdb_movie_id = selected.get("id")
+            if not tmdb_movie_id:
+                return None
+
+            # 2) TMDB movie -> regional release dates/certifications
+            release_url = f"{TMDB_API_URL}/movie/{tmdb_movie_id}/release_dates"
+            async with session.get(
+                release_url,
+                params={"api_key": TMDB_KEY},
+            ) as response:
+                if response.status != 200:
+                    print(
+                        f"TMDB Release Dates HTTP {response.status} [{imdb_id}/{tmdb_movie_id}]",
+                        flush=True,
+                    )
+                    return None
+                release_data = await response.json(content_type=None)
+
+        countries = release_data.get("results") or []
+        india = next(
+            (
+                item for item in countries
+                if str(item.get("iso_3166_1") or "").upper() == "IN"
+            ),
+            None,
+        )
+        if not india:
             return None
 
-        # Google search HTML contains both visible result text and structured
-        # snippets. Convert it to readable text first.
-        text = html.unescape(raw)
-        text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.I | re.S)
-        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
+        release_entries = india.get("release_dates") or []
+        if not release_entries:
+            return None
 
-        # Highest-confidence forms: an explicit Certificate/Certification
-        # label immediately followed by the value.
-        labelled_patterns = [
-            r"(?:certificate|certification|certified\s+as)\s*(?:rating)?\s*[:\-]\s*([A-Za-z0-9/ .-]{1,12})",
-            r"(?:certificate|certification)\s+(?:is|was)\s+(?:an?\s+)?([A-Za-z0-9/ .-]{1,12})",
-            r"(?:rated|rating)\s*[:\-]?\s*([A-Za-z0-9/.-]{1,10})",
-        ]
+        # TMDB release-date types:
+        # 1 = Premiere, 2 = Theatrical (limited), 3 = Theatrical,
+        # 4 = Digital, 5 = Physical, 6 = TV.
+        # For a CBFC certificate, theatrical entries are the useful ones.
+        type_priority = {3: 0, 2: 1, 1: 2, 4: 3, 5: 4, 6: 5}
+        candidates = []
 
-        for pattern in labelled_patterns:
-            match = re.search(pattern, text, re.I)
-            if not match:
+        for entry in release_entries:
+            certification = clean_text(entry.get("certification"), "")
+            if not certification:
                 continue
-            candidate = match.group(1).strip(" .,:;|-_")
-            value_match = certificate_pattern.search(candidate)
-            if value_match:
-                value = value_match.group(0).strip()
-                normalized = normalize_certificate(value)
-                if normalized:
-                    return normalized
 
-        # Google sometimes renders the knowledge-panel field as
-        # "Certificate A" without punctuation. Limit the search to a small
-        # window around the word so unrelated ratings in the page are ignored.
-        for match in re.finditer(r"(?:certificate|certification)", text, re.I):
-            window = text[match.end():match.end() + 80]
-            value_match = certificate_pattern.search(window)
-            if value_match:
-                value = value_match.group(0).strip()
-                normalized = normalize_certificate(value)
-                if normalized:
-                    return normalized
+            raw_type = entry.get("type")
+            try:
+                release_type = int(raw_type)
+            except (TypeError, ValueError):
+                release_type = 99
+
+            release_date = str(entry.get("release_date") or "")
+            candidates.append((
+                type_priority.get(release_type, 99),
+                release_date,
+                certification,
+            ))
+
+        if not candidates:
+            return None
+
+        # Prefer theatrical certification, then the most recent entry within
+        # that type. This also handles TMDB entries that contain multiple
+        # Indian release records for the same movie.
+        candidates.sort(key=lambda item: (item[0], item[1]), reverse=False)
+        best_priority = candidates[0][0]
+        same_priority = [item for item in candidates if item[0] == best_priority]
+        same_priority.sort(key=lambda item: item[1], reverse=True)
+        certificate = same_priority[0][2].strip()
+
+        return normalize_certificate(certificate) or None
 
     except Exception as exc:
-        print(f"Google Certificate Error [{title}]: {exc}", flush=True)
-
-    return None
+        print(f"TMDB CBFC Certificate Error [{imdb_id}]: {exc}", flush=True)
+        return None
 
 
 # ============================================================
@@ -1245,18 +1298,19 @@ async def fetch_full_movie_details(
                     aka_values.append(text)
             data["aka"] = unique_strings(aka_values)[:8]
 
-    # IMDb sometimes leaves certificate empty/generic. Fetch ONLY the
-    # certificate from Google; every other field remains exactly as collected
-    # above from IMDb. If Google cannot provide it, keep the IMDb value.
+    # IMDb sometimes leaves certificate empty/generic. Fetch ONLY the India
+    # CBFC certificate from TMDB; every other field remains exactly as collected
+    # above from IMDb. If TMDB cannot provide it, keep the IMDb value.
     try:
-        google_certificate = await fetch_google_certificate(
+        tmdb_certificate = await fetch_tmdb_cbfc_certificate(
+            imdb_id,
             data["title"],
             data.get("year"),
         )
-        if google_certificate:
-            data["certificate"] = google_certificate
+        if tmdb_certificate:
+            data["certificate"] = tmdb_certificate
     except Exception as exc:
-        print(f"Google Certificate Fallback Error [{imdb_id}]: {exc}", flush=True)
+        print(f"TMDB CBFC Certificate Fallback Error [{imdb_id}]: {exc}", flush=True)
 
     # Do not print the literal N/A for these fields. IMDb can genuinely omit
     # metadata for some titles, so use a neutral label only as a last resort.
