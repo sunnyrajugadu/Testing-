@@ -338,7 +338,7 @@ async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=
 
                     reply_text = (
                         f"🎀\n`{movie_name}`\n\n"
-                        "**Spelling Mistake Bro ‼️️**\n\n"
+                        "**Spelling Mistake Bro ‼**\n\n"
                         "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
                     )
 
@@ -370,6 +370,13 @@ async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=
                 asyncio.create_task(auto_delete_message(no_result_message, delay_seconds=10))
 
             return
+
+        # ================= MOVIE UNTE MATHRAME REACTION ================= #
+        if reply_to_message_id:
+            try:
+                await client.send_reaction(chat_id=chat_id, message_id=reply_to_message_id, emoji="🔥")
+            except Exception:
+                pass
 
         # ================= SEARCH ID ================= #
         search_id = str(uuid.uuid4())
