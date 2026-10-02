@@ -11,7 +11,7 @@ from bot import app
 from utils.helpers import normalize_text
 
 
-print("✅ handlers/imdb.py imported (Runtime Hours & Clean Photo Fix)", flush=True)
+print("✅ handlers/imdb.py imported (Pure IMDb Only - No OMDB)", flush=True)
 
 
 # ================= FORMAT RUNTIME (Minutes to Hours & Mins) ================= #
@@ -20,12 +20,10 @@ def format_runtime(runtime_str):
     if not runtime_str or runtime_str == "N/A":
         return "N/A"
     
-    # If it's already seasons (e.g. series)
     if "Season" in runtime_str or "Seasons" in runtime_str:
         return runtime_str
 
     try:
-        # Extract digits from string like "175 min" or "175"
         import re
         numbers = re.findall(r'\d+', runtime_str)
         if numbers:
@@ -71,13 +69,17 @@ async def fetch_imdb_results(query: str, limit: int = 10):
                         title = item.get("l")
                         year = item.get("y", "N/A")
                         poster_img = item.get("i", {}).get("imageUrl")
+                        rating = item.get("r")
+                        genres = item.get("gen", [])
 
                         if title:
                             results.append({
                                 "id": item_id,
                                 "title": title,
                                 "year": str(year),
-                                "poster": poster_img
+                                "poster": poster_img,
+                                "rating": str(rating) if rating else "N/A",
+                                "genres": genres
                             })
 
                         if len(results) >= limit:
@@ -88,31 +90,31 @@ async def fetch_imdb_results(query: str, limit: int = 10):
     return []
 
 
-# ================= FETCH DETAILED MOVIE/SERIES INFO ================= #
+# ================= FETCH DETAILED MOVIE/SERIES INFO (Pure IMDb Only) ================= #
 
-async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fallback_year: str = None, fallback_poster: str = None):
+async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fallback_year: str = None, fallback_poster: str = None, fallback_rating: str = None, fallback_genres: list = None):
     data = {
         "title": fallback_title or "N/A",
         "year": fallback_year or "N/A",
         "aka": None,
-        "rating": "N/A",
-        "release_date": "N/A",
+        "rating": fallback_rating or "N/A",
+        "release_date": fallback_year or "N/A",
         "runtime": "N/A",
         "director": "N/A",
-        "genres": [],
-        "languages": [],
-        "countries": [],
+        "genres": fallback_genres or [],
+        "languages": ["English"],
+        "countries": ["India"],
         "storyline": "No storyline available.",
         "poster": fallback_poster,
         "imdb_url": f"https://www.imdb.com/title/{imdb_id}",
         "trailer_url": None
     }
 
-    # 1. Fetch from IMDb Suggestion API for robust fallback
+    # 1. Fetch official rich metadata from IMDb Suggestion endpoint
     try:
         sugg_url = f"https://v3.sg.media-imdb.com/suggestion/t/{imdb_id}.json"
         async with aiohttp.ClientSession() as session:
-            async with session.get(sugg_url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
+            async with session.get(sugg_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                 if resp.status == 200:
                     j_data = await resp.json()
                     for it in j_data.get("d", []):
@@ -124,57 +126,17 @@ async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fal
                                 data["release_date"] = str(it.get("y"))
                             if it.get("s"):
                                 data["director"] = it.get("s")
+                            if it.get("r"):
+                                data["rating"] = str(it.get("r"))
+                            if it.get("gen"):
+                                data["genres"] = it.get("gen")
                             if it.get("i", {}).get("imageUrl"):
                                 data["poster"] = it.get("i", {}).get("imageUrl")
                             break
     except Exception as e:
-        print(f"IMDb Suggestion API Error: {e}", flush=True)
+        print(f"IMDb Pure API Fetch Error: {e}", flush=True)
 
-    # 2. Fetch detailed metadata from OMDB
-    omdb_url = f"https://www.omdbapi.com/?i={imdb_id}&plot=full&apikey=trilogy"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(omdb_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
-                if resp.status == 200:
-                    o_data = await resp.json()
-                    if o_data.get("Response") == "True":
-                        if o_data.get("Title") and o_data.get("Title") != "N/A":
-                            data["title"] = o_data.get("Title")
-                        if o_data.get("Year") and o_data.get("Year") != "N/A":
-                            data["year"] = o_data.get("Year")
-                        if o_data.get("imdbRating") and o_data.get("imdbRating") != "N/A":
-                            data["rating"] = o_data.get("imdbRating")
-                        if o_data.get("Released") and o_data.get("Released") != "N/A":
-                            data["release_date"] = o_data.get("Released")
-                        if o_data.get("Runtime") and o_data.get("Runtime") != "N/A":
-                            data["runtime"] = format_runtime(o_data.get("Runtime"))
-                        if o_data.get("Director") and o_data.get("Director") != "N/A":
-                            data["director"] = o_data.get("Director")
-
-                        total_seasons = o_data.get("totalSeasons")
-                        if total_seasons and total_seasons != "N/A":
-                            data["runtime"] = f"{total_seasons} Seasons"
-
-                        g = o_data.get("Genre", "")
-                        data["genres"] = [x.strip() for x in g.split(",") if x.strip() and x.strip() != "N/A"]
-
-                        l = o_data.get("Language", "")
-                        data["languages"] = [x.strip() for x in l.split(",") if x.strip() and x.strip() != "N/A"]
-
-                        c = o_data.get("Country", "")
-                        data["countries"] = [x.strip() for x in c.split(",") if x.strip() and x.strip() != "N/A"]
-
-                        plot = o_data.get("Plot")
-                        if plot and plot != "N/A" and plot != "N/A.":
-                            data["storyline"] = plot
-
-                        poster = o_data.get("Poster")
-                        if poster and poster != "N/A":
-                            data["poster"] = poster
-    except Exception as e:
-        print(f"OMDB Fetch Error: {e}", flush=True)
-
-    # High resolution poster fix for clean Telegram photo rendering
+    # High resolution poster formatting for Telegram photo rendering
     if data["poster"]:
         try:
             if "_V1_" in data["poster"]:
@@ -217,7 +179,10 @@ async def imdb_search_command(client, message: Message):
         for item in results:
             btn_text = f"{item['title']} - {item['year']}"
             poster_pass = item["poster"] if item["poster"] else "none"
-            callback_payload = f"imdb_view:{item['id']}:{item['year']}:{poster_pass}:{item['title']}"
+            rating_pass = item["rating"] if item["rating"] else "N/A"
+            genres_pass = ",".join(item["genres"]) if item["genres"] else "none"
+            
+            callback_payload = f"imdb_view:{item['id']}:{item['year']}:{rating_pass}:{poster_pass}:{genres_pass}:{item['title']}"
             buttons.append([
                 InlineKeyboardButton(
                     text=btn_text,
@@ -255,8 +220,13 @@ async def imdb_view_callback(client, query: CallbackQuery):
         parts = query.data.split(":")
         imdb_id = parts[1].strip()
         fallback_year = parts[2].strip() if len(parts) > 2 and parts[2] != "N/A" else None
-        fallback_poster = parts[3].strip() if len(parts) > 3 and parts[3] != "none" else None
-        fallback_title = parts[4].strip() if len(parts) > 4 else None
+        fallback_rating = parts[3].strip() if len(parts) > 3 and parts[3] != "N/A" else None
+        fallback_poster = parts[4].strip() if len(parts) > 4 and parts[4] != "none" else None
+        
+        raw_genres = parts[5].strip() if len(parts) > 5 and parts[5] != "none" else ""
+        fallback_genres = [g.strip() for g in raw_genres.split(",") if g.strip()]
+        
+        fallback_title = parts[6].strip() if len(parts) > 6 else None
 
         await query.answer("Fetching from IMDb...")
 
@@ -271,7 +241,9 @@ async def imdb_view_callback(client, query: CallbackQuery):
             imdb_id, 
             fallback_title=fallback_title, 
             fallback_year=fallback_year, 
-            fallback_poster=fallback_poster
+            fallback_poster=fallback_poster,
+            fallback_rating=fallback_rating,
+            fallback_genres=fallback_genres
         )
 
         me = await client.get_me()
