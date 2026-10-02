@@ -1,4 +1,4 @@
-pyrogram 
+pyrogram
 tgcrypto==1.2.5
 motor
 flask
@@ -8,3 +8,5 @@ dnspython
 aiohttp
 requests
 psutil
+thefuzz
+python-Levenshtein
