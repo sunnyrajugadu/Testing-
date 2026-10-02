@@ -173,6 +173,16 @@ async def log_search(
         print(f"❌ SEARCH LOG ERROR : {e}", flush=True)
 
 
+# ================= AUTO DELETE HELPER ================= #
+
+async def auto_delete_message(message, delay_seconds: int = 30):
+    try:
+        await asyncio.sleep(delay_seconds)
+        await message.delete()
+    except Exception:
+        pass
+
+
 # ================= LANGUAGE BUTTONS ================= #
 
 def language_buttons(
@@ -285,7 +295,7 @@ def pagination_buttons(
 
 # ================= CORE SEARCH EXECUTION ================= #
 
-async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=None):
+async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=None, allow_spelling_suggestions=True):
     """
     Executes search and sends the files. Can be called from message handler or callback.
     """
@@ -297,6 +307,12 @@ async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=
 
         results = await search_files(movie_name)
 
+        # Okavela brackets unte (e.g. Varsham (2004)), bracket loni year theesi clean name tho DB check chesthundi
+        if not results and "(" in movie_name:
+            clean_name = movie_name.split("(")[0].strip()
+            if clean_name:
+                results = await search_files(clean_name)
+
         asyncio.create_task(
             log_search(
                 client,
@@ -306,35 +322,39 @@ async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=
             )
         )
 
-        # ================= NO RESULTS (SPELLING SUGGESTIONS) ================= #
+        # ================= NO RESULTS ================= #
         if not results:
-            # IMDb suggestions theesukovadam
-            suggestions = await get_imdb_suggestions(movie_name, limit=10)
+            # 1. Spelling suggestions show cheyadam (allow_spelling_suggestions True unte)
+            if allow_spelling_suggestions:
+                suggestions = await get_imdb_suggestions(movie_name, limit=10)
 
-            if suggestions:
-                suggestion_buttons = []
-                for title in suggestions:
-                    # Pyrogram callback limit 64 bytes kabatti slice chesthunnam
-                    cb_data = f"spell:{user_id}:{title[:45]}"
-                    suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
+                if suggestions:
+                    suggestion_buttons = []
+                    for title in suggestions:
+                        cb_data = f"spell:{user_id}:{title[:45]}"
+                        suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
 
-                suggestion_buttons.append([InlineKeyboardButton("✖ CLOSE ✖", callback_data="close")])
+                    suggestion_buttons.append([InlineKeyboardButton("✖ CLOSE ✖", callback_data="close")])
 
-                reply_text = (
-                    f"🎀\n`{movie_name}`\n\n"
-                    "**Spelling Mistake Bro ‼️**\n\n"
-                    "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
-                )
+                    reply_text = (
+                        f"🎀\n`{movie_name}`\n\n"
+                        "**Spelling Mistake Bro ‼️️**\n\n"
+                        "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
+                    )
 
-                await client.send_message(
-                    chat_id=chat_id,
-                    text=reply_text,
-                    reply_markup=InlineKeyboardMarkup(suggestion_buttons),
-                    reply_to_message_id=reply_to_message_id
-                )
-                return
+                    spell_msg = await client.send_message(
+                        chat_id=chat_id,
+                        text=reply_text,
+                        reply_markup=InlineKeyboardMarkup(suggestion_buttons),
+                        reply_to_message_id=reply_to_message_id
+                    )
 
-            # IMDb lo kuda em suggestions dorakkapothe fallback message
+                    # 30 SECONDS LO AUTOMATIC DELETE
+                    if spell_msg:
+                        asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=30))
+                    return
+
+            # 2. Suggestions click chesaka file DB lo lekapothe No Results message chupisthundi
             no_result_message = await client.send_message(
                 chat_id=chat_id,
                 text=f"""
@@ -345,11 +365,9 @@ async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=
                 reply_to_message_id=reply_to_message_id
             )
 
-            try:
-                await asyncio.sleep(10)
-                await no_result_message.delete()
-            except Exception:
-                pass
+            # 10 SECONDS LO AUTOMATIC DELETE
+            if no_result_message:
+                asyncio.create_task(auto_delete_message(no_result_message, delay_seconds=10))
 
             return
 
@@ -457,13 +475,11 @@ async def search_movie_handler(
         if not message.from_user:
             return
 
-        # 1. Ignore messages sent via Inline Query (Prevents Oops error on inline clicks)
         if message.via_bot:
             return
 
         movie_name = (message.text or "").strip()
 
-        # 2. Ignore messages that contain inline file text / captions
         if (
             "Size :-" in movie_name
             or "Size:" in movie_name
@@ -474,12 +490,10 @@ async def search_movie_handler(
         ):
             return
 
-        # Remove bot username prefix if any
         if movie_name.startswith("@"):
             parts = movie_name.split()
             movie_name = " ".join(parts[1:])
 
-        # Remove /search command prefix if typed in PM
         if movie_name.lower().startswith("/search"):
             movie_name = movie_name[7:].strip()
 
@@ -496,7 +510,8 @@ async def search_movie_handler(
             user=message.from_user,
             chat_id=message.chat.id,
             movie_name=movie_name,
-            reply_to_message_id=message.id
+            reply_to_message_id=message.id,
+            allow_spelling_suggestions=True
         )
 
     except Exception as e:
