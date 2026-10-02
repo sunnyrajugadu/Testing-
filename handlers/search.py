@@ -130,34 +130,59 @@ def get_file_display_name(file):
     return "Movie"
 
 
-# ================= EXTRACT DISTINCT MOVIES FROM DB ================= #
+# ================= SMART DISTINCT MOVIE EXTRACTOR ================= #
 
-def extract_distinct_movies(files_list):
-    """
-    Groups database results to find unique movie names.
-    e.g., Pushpa: The Rise (2021), Pushpa 2: The Rule (2024)
-    """
-    from utils.rename import clean_movie_name
+def clean_movie_base_title(raw_name: str) -> str:
+    from utils.rename import clean_file_name
 
-    seen = {}
+    title = clean_file_name(raw_name)
+
+    # 1. Strip URLs & domains
+    title = re.sub(r"https?://\S+|www\.\S+|\b[a-zA-Z0-9_\-\.]+\.(com|org|net|in|top|click|link|xyz|site|fun|lol)\b", "", title, flags=re.IGNORECASE)
+
+    # 2. Strip telegram channel tags & prefixes
+    title = re.sub(r"\b(hollywoodtelugufiles|link\s*4u|tgbots|cinemaveta|mrDudeholic|cinemaghar|moviez|films)\b", "", title, flags=re.IGNORECASE)
+
+    # 3. Strip quality, years, codecs, audios, and resolutions
+    title = re.split(r"\b(20\d\d|19\d\d|720p|1080p|480p|2160p|4k|hdrip|webrip|web-dl|dvdrip|prehd|cam|camrip|hdtc|hevc|x264|x265|aac|ac3|ddp|esub|vers?)\b", title, flags=re.IGNORECASE)[0]
+
+    # 4. Strip languages from the tail
+    title = re.sub(r"\b(telugu|tamil|hindi|english|malayalam|kannada|multi|dual\s*audio)\b", "", title, flags=re.IGNORECASE)
+
+    # 5. Clean symbols & multiple spaces
+    title = re.sub(r"[_.\-+]+", " ", title)
+    title = re.sub(r"[^\w\s:]", "", title)
+    title = re.sub(r"\s+", " ", title).strip()
+
+    return title
+
+
+def extract_distinct_movies(files_list, search_query: str):
+    query_norm = search_query.lower().strip()
+    raw_titles = []
+
     for f in files_list:
-        raw = f.get("movie_name") or f.get("file_name") or ""
-        clean = clean_movie_name(raw)
+        raw = f.get("movie_name") or f.get("file_name") or f.get("original_file_name") or ""
+        clean = clean_movie_base_title(raw)
+        if clean and len(clean) >= 3 and query_norm in clean.lower():
+            raw_titles.append(clean)
 
-        # Remove resolution/quality tags to extract clean movie name
-        clean_title = re.split(
-            r"\b(20\d\d|19\d\d|720p|1080p|480p|2160p|4k|hdrip|webrip|prehd|cam)\b",
-            clean,
-            flags=re.IGNORECASE
-        )[0].strip()
-        clean_title = clean_title.strip(" -_.:")
+    # Grouping: merge sub-titles (e.g. 'Pushpa The Rise Part 1' into 'Pushpa The Rise')
+    distinct = []
+    for cand in sorted(raw_titles, key=len):
+        cand_lower = cand.lower()
+        matched = False
+        for idx, exist in enumerate(distinct):
+            exist_lower = exist.lower()
+            if cand_lower.startswith(exist_lower) or exist_lower.startswith(cand_lower):
+                if len(cand) < len(exist):
+                    distinct[idx] = cand
+                matched = True
+                break
+        if not matched:
+            distinct.append(cand)
 
-        if clean_title and len(clean_title) > 2:
-            key = clean_title.lower()
-            if key not in seen:
-                seen[key] = clean_title
-
-    return list(seen.values())
+    return [d.title() for d in distinct]
 
 
 # ================= SEARCH LOG ================= #
@@ -343,7 +368,7 @@ async def execute_search(
 
         asyncio.create_task(increase_search_count(user_id))
 
-        # 1. Search database first
+        # 1. Search database
         results = await search_files(movie_name)
 
         if not results and "(" in movie_name:
@@ -351,11 +376,10 @@ async def execute_search(
             if clean_name:
                 results = await search_files(clean_name)
 
-        # 2. Check if DB has multiple matching movies (e.g. Pushpa 1, Pushpa 2, Baahubali 1, Baahubali 2)
+        # 2. Check if DB has multiple matching movies (e.g. Pushpa The Rise vs Pushpaka Vimanam)
         if results and allow_spelling_suggestions:
-            distinct_db_movies = extract_distinct_movies(results)
+            distinct_db_movies = extract_distinct_movies(results, movie_name)
 
-            # Query short ga unte mariyu DB lo multiple movies unte mathrame suggestion buttons chupisthundhi
             query_words = len(movie_name.strip().split())
             if len(distinct_db_movies) > 1 and query_words <= 2:
                 buttons = []
@@ -372,7 +396,7 @@ async def execute_search(
                 prompt_msg = await client.send_message(
                     chat_id=chat_id,
                     text=(
-                        f"🎬 **Multiple movies found in DB for:** `{movie_name}`\n\n"
+                        f"🎬 **Multiple movies found for:** `{movie_name}`\n\n"
                         "👇 **Please select which movie you want:**"
                     ),
                     reply_markup=InlineKeyboardMarkup(buttons),
@@ -551,7 +575,7 @@ async def execute_search(
                 )
                 sent_success = True
             except Exception as pe:
-                print(f"⚠️ Landscape photo dispatch failed ({pe}), falling back to text...", flush=True)
+                print(f"⚠️ Landscape dispatch failed ({pe}), fallback to text...", flush=True)
 
         if not sent_success:
             await client.send_message(
@@ -628,7 +652,7 @@ async def search_movie_handler(
         if not await enforce_fsub(client, message, payload=movie_name):
             return
 
-        # Execute search with DB-only franchise suggestions
+        # Execute search
         await execute_search(
             client=client,
             user=message.from_user,
