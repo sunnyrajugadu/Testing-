@@ -11,7 +11,7 @@ from bot import app
 from utils.helpers import normalize_text
 
 
-print("✅ handlers/imdb.py imported (With Usage Guide)", flush=True)
+print("✅ handlers/imdb.py imported (With Reply Support & Compulsory Storyline)", flush=True)
 
 
 # ================= FETCH SUGGESTION TITLES (IMDb) ================= #
@@ -57,7 +57,7 @@ async def fetch_imdb_results(query: str, limit: int = 10):
     return []
 
 
-# ================= FETCH DETAILED MOVIE INFO (Pure IMDb / OMDB) ================= #
+# ================= FETCH DETAILED MOVIE INFO (Pure IMDb / OMDB + TMDB Backup) ================= #
 
 async def fetch_full_movie_details(imdb_id: str):
     data = {
@@ -77,7 +77,7 @@ async def fetch_full_movie_details(imdb_id: str):
         "trailer_url": None
     }
 
-    # Fetch official poster from IMDb suggestion API
+    # 1. Fetch official poster from IMDb suggestion API
     try:
         prefix = imdb_id[:3] if len(imdb_id) >= 3 else imdb_id
         sugg_url = f"https://v3.sg.media-imdb.com/suggestion/{prefix}/{imdb_id}.json"
@@ -94,7 +94,7 @@ async def fetch_full_movie_details(imdb_id: str):
     except Exception:
         pass
 
-    # Fetch full metadata and poster fallback from OMDB
+    # 2. Fetch full metadata and poster fallback from OMDB
     omdb_url = f"https://www.omdbapi.com/?i={imdb_id}&plot=full&apikey=trilogy"
     try:
         async with aiohttp.ClientSession() as session:
@@ -119,7 +119,7 @@ async def fetch_full_movie_details(imdb_id: str):
                         data["countries"] = [x.strip() for x in c.split(",") if x.strip() and x.strip() != "N/A"]
 
                         plot = o_data.get("Plot")
-                        if plot and plot != "N/A":
+                        if plot and plot != "N/A" and plot != "N/A.":
                             data["storyline"] = plot
 
                         poster = o_data.get("Poster")
@@ -128,6 +128,27 @@ async def fetch_full_movie_details(imdb_id: str):
     except Exception as e:
         print(f"IMDb OMDB Fetch Error: {e}", flush=True)
 
+    # 3. Compulsory storyline backup from TMDB if OMDB plot is missing
+    if data["storyline"] == "No storyline available.":
+        try:
+            tmdb_key = "7f43669a428c09611a0518fa9c0bbddb"
+            tmdb_find_url = f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={tmdb_key}&external_source=imdb_id"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(tmdb_find_url, timeout=aiohttp.ClientTimeout(total=3)) as t_resp:
+                    if t_resp.status == 200:
+                        t_data = await t_resp.json()
+                        items = t_data.get("movie_results") or t_data.get("tv_results") or []
+                        if items:
+                            overview = items[0].get("overview")
+                            if overview:
+                                data["storyline"] = overview
+                                if not data["poster"]:
+                                    backdrop = items[0].get("poster_path") or items[0].get("backdrop_path")
+                                    if backdrop:
+                                        data["poster"] = f"https://image.tmdb.org/t/p/w780{backdrop}"
+        except Exception as e:
+            print(f"TMDB Storyline Backup Error: {e}", flush=True)
+
     # YouTube Trailer search query link
     clean_name = data["title"].replace(" ", "+")
     data["trailer_url"] = f"https://www.youtube.com/results?search_query={clean_name}+{data['year']}+official+trailer"
@@ -135,7 +156,7 @@ async def fetch_full_movie_details(imdb_id: str):
     return data
 
 
-# ================= /imdb COMMAND HANDLER WITH USAGE GUIDE ================= #
+# ================= /imdb COMMAND HANDLER WITH REPLY SUPPORT ================= #
 
 @app.on_message(filters.private & filters.command(["imdb"]))
 async def imdb_search_command(client, message: Message):
@@ -250,7 +271,7 @@ async def imdb_view_callback(client, query: CallbackQuery):
             ],
             [
                 InlineKeyboardButton(
-                    "🎥 Watch Trailer",
+                    "▶️ Watch Trailer",
                     url=info["trailer_url"]
                 )
             ]
