@@ -682,7 +682,9 @@ async def execute_search(
             "owner",
             "delete",
             "generate_link",
-            "imdb"
+            "imdb",
+            "people",
+            "pe"
         ]
     )
 )
