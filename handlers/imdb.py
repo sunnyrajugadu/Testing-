@@ -11,7 +11,7 @@ from bot import app
 from utils.helpers import normalize_text
 
 
-print("✅ handlers/imdb.py imported (With Reply Support & Compulsory Storyline)", flush=True)
+print("✅ handlers/imdb.py imported (Pure IMDb + Series Format + Clickable Title)", flush=True)
 
 
 # ================= FETCH SUGGESTION TITLES (IMDb) ================= #
@@ -57,7 +57,7 @@ async def fetch_imdb_results(query: str, limit: int = 10):
     return []
 
 
-# ================= FETCH DETAILED MOVIE INFO (Pure IMDb / OMDB + TMDB Backup) ================= #
+# ================= FETCH DETAILED MOVIE/SERIES INFO ================= #
 
 async def fetch_full_movie_details(imdb_id: str):
     data = {
@@ -106,9 +106,18 @@ async def fetch_full_movie_details(imdb_id: str):
                         data["year"] = o_data.get("Year", "N/A")
                         data["rating"] = o_data.get("imdbRating", "N/A")
                         data["release_date"] = o_data.get("Released", "N/A")
-                        data["runtime"] = o_data.get("Runtime", "N/A")
                         data["director"] = o_data.get("Director", "N/A")
                         
+                        # Runtime or Series handling
+                        r_time = o_data.get("Runtime", "N/A")
+                        total_seasons = o_data.get("totalSeasons")
+                        
+                        if total_seasons and total_seasons != "N/A":
+                            # It's a Series, fetch season/episode details via TMDB
+                            pass  # Will be populated via TMDB backup below
+                        else:
+                            data["runtime"] = r_time
+
                         g = o_data.get("Genre", "")
                         data["genres"] = [x.strip() for x in g.split(",") if x.strip() and x.strip() != "N/A"]
 
@@ -128,26 +137,44 @@ async def fetch_full_movie_details(imdb_id: str):
     except Exception as e:
         print(f"IMDb OMDB Fetch Error: {e}", flush=True)
 
-    # 3. Compulsory storyline backup from TMDB if OMDB plot is missing
-    if data["storyline"] == "No storyline available.":
-        try:
-            tmdb_key = "7f43669a428c09611a0518fa9c0bbddb"
-            tmdb_find_url = f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={tmdb_key}&external_source=imdb_id"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(tmdb_find_url, timeout=aiohttp.ClientTimeout(total=3)) as t_resp:
-                    if t_resp.status == 200:
-                        t_data = await t_resp.json()
-                        items = t_data.get("movie_results") or t_data.get("tv_results") or []
-                        if items:
-                            overview = items[0].get("overview")
+    # 3. TMDB Backup for Storyline (only if missing) & Series Seasons/Episodes formatting
+    try:
+        tmdb_key = "7f43669a428c09611a0518fa9c0bbddb"
+        tmdb_find_url = f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={tmdb_key}&external_source=imdb_id"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(tmdb_find_url, timeout=aiohttp.ClientTimeout(total=4)) as t_resp:
+                if t_resp.status == 200:
+                    t_data = await t_resp.json()
+                    is_tv = bool(t_data.get("tv_results"))
+                    items = t_data.get("tv_results") or t_data.get("movie_results") or []
+                    
+                    if items:
+                        t_item = items[0]
+                        
+                        # Storyline fallback if missing in IMDb/OMDB
+                        if data["storyline"] == "No storyline available.":
+                            overview = t_item.get("overview")
                             if overview:
                                 data["storyline"] = overview
-                                if not data["poster"]:
-                                    backdrop = items[0].get("poster_path") or items[0].get("backdrop_path")
-                                    if backdrop:
-                                        data["poster"] = f"https://image.tmdb.org/t/p/w780{backdrop}"
-        except Exception as e:
-            print(f"TMDB Storyline Backup Error: {e}", flush=True)
+
+                        # Series Seasons & Episodes format (S01 E10, S02 E12...)
+                        if is_tv:
+                            t_id = t_item.get("id")
+                            tv_url = f"https://api.themoviedb.org/3/tv/{t_id}?api_key={tmdb_key}"
+                            async with session.get(tv_url, timeout=aiohttp.ClientTimeout(total=3)) as tv_resp:
+                                if tv_resp.status == 200:
+                                    tv_data = await tv_resp.json()
+                                    seasons = tv_data.get("seasons", [])
+                                    season_parts = []
+                                    for s in seasons:
+                                        s_num = s.get("season_number")
+                                        e_count = s.get("episode_count")
+                                        if s_num > 0 and e_count:
+                                            season_parts.append(f"S{s_num:02d} E{e_count:02d}")
+                                    if season_parts:
+                                        data["runtime"] = ", ".join(season_parts)
+    except Exception as e:
+        print(f"TMDB Backup / Series Details Error: {e}", flush=True)
 
     # YouTube Trailer search query link
     clean_name = data["title"].replace(" ", "+")
@@ -177,7 +204,6 @@ async def imdb_search_command(client, message: Message):
         if not results:
             return await search_msg.edit_text(f"🥀 <b>No matching results found for :</b> <code>{html.escape(query)}</code>")
 
-        # Clean text buttons matching 3rd picture style (Title - Year)
         buttons = []
         for item in results:
             btn_text = f"{item['title']} - {item['year']}"
@@ -210,7 +236,7 @@ async def imdb_search_command(client, message: Message):
             pass
 
 
-# ================= CALLBACK FOR MOVIE CARD (Matching 4th Picture Style) ================= #
+# ================= CALLBACK FOR MOVIE CARD ================= #
 
 @app.on_callback_query(filters.regex(r"^imdb_view:(.*)"))
 async def imdb_view_callback(client, query: CallbackQuery):
@@ -230,16 +256,18 @@ async def imdb_view_callback(client, query: CallbackQuery):
         bot_user = me.username or "CinemaVetaBot"
         bot_mention = f'<a href="https://t.me/{bot_user}"><b>@{bot_user}</b></a>'
 
-        # Hashtags formatting matching 4th screenshot style
+        # Hashtags formatting
         genre_str = " ".join([f"#{g.replace(' ', '_')}" for g in info["genres"]]) if info["genres"] else "N/A"
         lang_str = " ".join([f"#{l.replace(' ', '_')}" for l in info["languages"]]) if info["languages"] else "N/A"
         country_str = " ".join([f"#{c.replace(' ', '_')}" for c in info["countries"]]) if info["countries"] else "N/A"
 
         rating_disp = f"{info['rating']} / 10" if info['rating'] != "N/A" else "N/A / 10"
 
-        # Matching 4th picture caption structure exactly
+        # Clickable Hyperlink Title (Direct IMDb Link)
+        title_link = f'<a href="{info["imdb_url"]}"><b>{html.escape(info["title"])} [{html.escape(str(info["year"]))}]</b></a>'
+
         caption_lines = [
-            f"🎬 <b>{html.escape(info['title'])} [{html.escape(str(info['year']))}]</b>\n"
+            f"🎬 {title_link}\n"
         ]
 
         if info["aka"]:
@@ -260,18 +288,17 @@ async def imdb_view_callback(client, query: CallbackQuery):
 
         final_caption = "\n".join(caption_lines)
 
-        # Matching 4th picture buttons format exactly
         clean_btn_title = info["title"]
         buttons = [
             [
                 InlineKeyboardButton(
-                    f"🔗 {clean_btn_title} on IMDb",
+                    f"🔗 View {clean_btn_title} on IMDb",
                     url=info["imdb_url"]
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "▶️ Watch Trailer",
+                    "🎥 Watch Trailer",
                     url=info["trailer_url"]
                 )
             ]
