@@ -167,7 +167,6 @@ def extract_distinct_movies(files_list, search_query: str):
         if clean and len(clean) >= 3 and query_norm in clean.lower():
             raw_titles.append(clean)
 
-    # Grouping: merge sub-titles (e.g. 'Pushpa The Rise Part 1' into 'Pushpa The Rise')
     distinct = []
     for cand in sorted(raw_titles, key=len):
         cand_lower = cand.lower()
@@ -478,17 +477,18 @@ async def execute_search(
                 detected_audios.update([a.strip() for a in aud.split(",") if a.strip()])
         audio_str = ", ".join(list(detected_audios)[:4]) if detected_audios else "Multi"
 
-        # Build Caption
-        caption_lines = [
-            f"🌟✨ <b>Movie Request:</b> <code>{html.escape(movie_name)}</code> 🪄\n"
-        ]
+        # Build Direct IMDb Details Caption (Movie Request Line Removed)
+        caption_lines = []
 
         if movie_details and movie_details.get("title"):
             m_title = movie_details['title']
             if movie_details.get("year"):
                 m_title += f" ({movie_details['year']})"
             caption_lines.append(f"🎬 <b>{html.escape(m_title)}</b>\n")
+        else:
+            caption_lines.append(f"🎬 <b>{html.escape(movie_name.title())}</b>\n")
 
+        if movie_details:
             if movie_details.get("rating") and movie_details["rating"] != "N/A":
                 caption_lines.append(f"⭐ <b>RATING :</b> <code>{movie_details['rating']} / 10</code>")
 
@@ -498,7 +498,7 @@ async def execute_search(
             if movie_details.get("runtime") and movie_details["runtime"] != "N/A":
                 caption_lines.append(f"⏳ <b>RUN TIME :</b> <code>{movie_details['runtime']}</code>")
 
-            caption_lines.append(f"🔊 <b>AUDIO :</b> <code>{audio_str}</code>\n")
+        caption_lines.append(f"🔊 <b>AUDIO :</b> <code>{audio_str}</code>\n")
 
         caption_lines.extend([
             f"📁 <b>TOTAL FILES :</b> <code>{total_files_count}</code>",
@@ -585,12 +585,12 @@ async def execute_search(
                 reply_to_message_id=reply_to_message_id
             )
 
-        print("✅ SEARCH RESULT SENT WITH LANDSCAPE BANNER", flush=True)
+        print("✅ SEARCH RESULT SENT WITH DIRECT IMDB TITLE", flush=True)
 
     except Exception as e:
         print(f"❌ SEARCH ERROR : {e}", flush=True)
         try:
-            await client.send_message(chat_id, "⚠️ Something went wrong.", reply_to_message_id=reply_to_message_id)
+            await client.send_message(chat_id, "⚠️️ Something went wrong.", reply_to_message_id=reply_to_message_id)
         except Exception:
             pass
 
