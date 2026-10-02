@@ -1,3 +1,4 @@
+import aiohttp
 import re
 from filters.fsub import is_subscribed
 
@@ -35,3 +36,29 @@ def paginate(items: list, page: int, limit: int = 7):
     start = (page - 1) * limit
     end = start + limit
     return items[start:end]
+
+
+async def get_imdb_suggestions(query: str, limit: int = 10):
+    clean_q = normalize_text(query)
+    if not clean_q:
+        return []
+
+    first_char = clean_q[0]
+    url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{clean_q}.json"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    titles = []
+                    for item in data.get("d", []):
+                        title = item.get("l")
+                        if title and title not in titles:
+                            titles.append(title)
+                        if len(titles) >= limit:
+                            break
+                    return titles
+    except Exception as e:
+        print(f"IMDb Error: {e}")
+    return []
