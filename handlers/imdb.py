@@ -11,12 +11,10 @@ from bot import app
 from utils.helpers import normalize_text
 
 
-print("✅ handlers/imdb.py imported", flush=True)
-
-TMDB_KEY = "7f43669a428c09611a0518fa9c0bbddb"
+print("✅ handlers/imdb.py imported (Pure IMDb)", flush=True)
 
 
-# ================= FETCH SUGGESTION TITLES ================= #
+# ================= FETCH SUGGESTION TITLES (IMDb) ================= #
 
 async def fetch_imdb_results(query: str, limit: int = 10):
     clean_q = normalize_text(query)
@@ -43,14 +41,12 @@ async def fetch_imdb_results(query: str, limit: int = 10):
 
                         title = item.get("l")
                         year = item.get("y", "N/A")
-                        imdb_image = item.get("i", {}).get("imageUrl") if item.get("i") else None
 
                         if title:
                             results.append({
                                 "id": item_id,
                                 "title": title,
-                                "year": str(year),
-                                "imdb_poster": imdb_image
+                                "year": str(year)
                             })
 
                         if len(results) >= limit:
@@ -61,9 +57,9 @@ async def fetch_imdb_results(query: str, limit: int = 10):
     return []
 
 
-# ================= FETCH DETAILED MOVIE INFO ================= #
+# ================= FETCH DETAILED MOVIE INFO (Pure IMDb / OMDB) ================= #
 
-async def fetch_full_movie_details(imdb_id: str, source: str = "imdb"):
+async def fetch_full_movie_details(imdb_id: str):
     data = {
         "title": "N/A",
         "year": "N/A",
@@ -77,13 +73,28 @@ async def fetch_full_movie_details(imdb_id: str, source: str = "imdb"):
         "countries": [],
         "storyline": "No storyline available.",
         "poster": None,
-        "imdb_poster": None,
-        "tmdb_poster": None,
         "imdb_url": f"https://www.imdb.com/title/{imdb_id}",
         "trailer_url": None
     }
 
-    # 1. Fetch OMDB Details
+    # Fetch official poster from IMDb suggestion API
+    try:
+        prefix = imdb_id[:3] if len(imdb_id) >= 3 else imdb_id
+        sugg_url = f"https://v3.sg.media-imdb.com/suggestion/{prefix}/{imdb_id}.json"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(sugg_url, timeout=aiohttp.ClientTimeout(total=3)) as s_resp:
+                if s_resp.status == 200:
+                    s_data = await s_resp.json()
+                    for it in s_data.get("d", []):
+                        if str(it.get("id")) == imdb_id:
+                            img = it.get("i", {}).get("imageUrl")
+                            if img:
+                                data["poster"] = img
+                            break
+    except Exception:
+        pass
+
+    # Fetch full metadata and poster fallback from OMDB
     omdb_url = f"https://www.omdbapi.com/?i={imdb_id}&plot=full&apikey=trilogy"
     try:
         async with aiohttp.ClientSession() as session:
@@ -112,93 +123,47 @@ async def fetch_full_movie_details(imdb_id: str, source: str = "imdb"):
                             data["storyline"] = plot
 
                         poster = o_data.get("Poster")
-                        if poster and poster != "N/A":
-                            data["imdb_poster"] = poster
+                        if not data["poster"] and poster and poster != "N/A":
+                            data["poster"] = poster
     except Exception as e:
-        print(f"OMDB Detailed Fetch Error: {e}", flush=True)
+        print(f"IMDb OMDB Fetch Error: {e}", flush=True)
 
-    # 2. Fetch TMDB Details for TMDB image, AKA and Trailer
-    tmdb_find_url = f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={TMDB_KEY}&external_source=imdb_id"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(tmdb_find_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
-                if resp.status == 200:
-                    t_find = await resp.json()
-                    movie_res = t_find.get("movie_results") or t_find.get("tv_results") or []
-                    if movie_res:
-                        item = movie_res[0]
-                        tmdb_id = item.get("id")
-                        media_type = "movie" if t_find.get("movie_results") else "tv"
-
-                        poster_path = item.get("poster_path") or item.get("backdrop_path")
-                        if poster_path:
-                            data["tmdb_poster"] = f"https://image.tmdb.org/t/p/w780{poster_path}"
-
-                        ext_url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_KEY}&append_to_response=alternative_titles,videos"
-                        async with session.get(ext_url, timeout=aiohttp.ClientTimeout(total=4)) as ext_resp:
-                            if ext_resp.status == 200:
-                                ext_data = await ext_resp.json()
-                                
-                                alt_titles = (ext_data.get("alternative_titles", {}).get("titles") or 
-                                              ext_data.get("alternative_titles", {}).get("results") or [])
-                                for alt in alt_titles:
-                                    alt_title = alt.get("title")
-                                    if alt_title and alt_title.lower() != data["title"].lower():
-                                        data["aka"] = alt_title
-                                        break
-
-                                videos = ext_data.get("videos", {}).get("results", [])
-                                for vid in videos:
-                                    if vid.get("site") == "YouTube" and vid.get("type") in ["Trailer", "Teaser"]:
-                                        data["trailer_url"] = f"https://www.youtube.com/watch?v={vid.get('key')}"
-                                        break
-    except Exception as e:
-        print(f"TMDB Extended Fetch Error: {e}", flush=True)
-
-    # Trailer fallback
-    if not data["trailer_url"]:
-        clean_name = data["title"].replace(" ", "+")
-        data["trailer_url"] = f"https://www.youtube.com/results?search_query={clean_name}+official+trailer"
-
-    # Command source base meeda correct poster pick cheyyadam
-    if source == "tmdb":
-        data["poster"] = data["tmdb_poster"] or data["imdb_poster"]
-    else:
-        data["poster"] = data["imdb_poster"] or data["tmdb_poster"]
+    # YouTube Trailer search query link
+    clean_name = data["title"].replace(" ", "+")
+    data["trailer_url"] = f"https://www.youtube.com/results?search_query={clean_name}+{data['year']}+official+trailer"
 
     return data
 
 
-# ================= /imdb AND /tmdb COMMAND HANDLER ================= #
+# ================= ONLY /imdb COMMAND HANDLER ================= #
 
-@app.on_message(filters.command(["imdb", "tmdb"]))
+@app.on_message(filters.command(["imdb"]))
 async def imdb_search_command(client, message: Message):
     try:
-        cmd = message.command[0].lower()
         parts = message.text.split(maxsplit=1)
         if len(parts) < 2:
             return await message.reply_text(
-                f"💡 <b>Usage Guide :</b>\n"
-                f"» <code>/{cmd} &lt;movie_name&gt;</code>\n"
-                f"» <i>Example :</i> <code>/{cmd} Salaar</code>",
+                "💡 <b>Usage Guide :</b>\n"
+                "» <code>/imdb &lt;movie_name&gt;</code>\n"
+                "» <i>Example :</i> <code>/imdb Salaar</code>",
                 quote=True
             )
 
         query = parts[1].strip()
-        search_msg = await message.reply_text(f"⚡ <b>Searching {cmd.upper()} database...</b>", quote=True)
+        search_msg = await message.reply_text("⚡ <b>Searching IMDb database...</b>", quote=True)
 
         results = await fetch_imdb_results(query, limit=10)
         if not results:
             return await search_msg.edit_text(f"🥀 <b>No matching results found for :</b> <code>{html.escape(query)}</code>")
 
-        # Buttons WITHOUT EMOJIS (Pure clean text format)
+        # Clean text buttons without emojis
         buttons = []
         for item in results:
             btn_text = f"{item['title'][:40]} - {item['year']}"
             buttons.append([
                 InlineKeyboardButton(
                     text=btn_text,
-                    callback_data=f"imdb_view:{cmd}:{item['id']}"
+                    callback_data=f"imdb_view:{item['id']}"
                 )
             ])
 
@@ -217,27 +182,27 @@ async def imdb_search_command(client, message: Message):
         )
 
     except Exception as e:
-        print(f"IMDb/TMDB Command Error: {e}", flush=True)
+        print(f"IMDb Command Error: {e}", flush=True)
         try:
-            await message.reply_text("⚠️ Something went wrong while searching.", quote=True)
+            await message.reply_text("⚠️ Something went wrong while searching IMDb.", quote=True)
         except Exception:
             pass
 
 
 # ================= CALLBACK FOR MOVIE CARD ================= #
 
-@app.on_callback_query(filters.regex(r"^imdb_view:(imdb|tmdb):(.*)"))
+@app.on_callback_query(filters.regex(r"^imdb_view:(.*)"))
 async def imdb_view_callback(client, query: CallbackQuery):
     try:
-        _, source, imdb_id = query.data.split(":", 2)
-        await query.answer(f"Fetching from {source.upper()} 🍿...")
+        imdb_id = query.data.split(":", 1)[1].strip()
+        await query.answer("Fetching from IMDb...")
 
         try:
             await query.message.delete()
         except Exception:
             pass
 
-        info = await fetch_full_movie_details(imdb_id, source=source)
+        info = await fetch_full_movie_details(imdb_id)
 
         # Dynamic Bot Mention Link
         me = await client.get_me()
@@ -264,7 +229,7 @@ async def imdb_view_callback(client, query: CallbackQuery):
         caption_lines.extend([
             f"⭐ <b>IMDb Rating :</b> <code>{rating_disp}</code>",
             f"🗓️ <b>Release Date :</b> <code>{info['release_date']}</code>",
-            f"⏳ <b>Duration :</b> <code>{info['runtime']}</code>",
+            f"⏳ <b>Runtime :</b> <code>{info['runtime']}</code>",
             f"🎥 <b>Directed By :</b> <code>{info['director']}</code>",
             f"🎭 <b>Genre :</b> {genre_str}",
             f"🌐 <b>Language :</b> {lang_str}",
@@ -276,18 +241,18 @@ async def imdb_view_callback(client, query: CallbackQuery):
 
         final_caption = "\n".join(caption_lines)
 
-        # Exact title in button: "🔗 View {Title} on IMDb"
+        # Button: "🔗 View {Title} on IMDb"
         clean_btn_title = info["title"][:28]
         buttons = [
             [
                 InlineKeyboardButton(
-                    f"🔗 {clean_btn_title} on IMDb",
+                    f"🔗 View {clean_btn_title} on IMDb",
                     url=info["imdb_url"]
                 )
             ],
             [
                 InlineKeyboardButton(
-                    "🎦 Watch Trailer",
+                    "🎥 Watch Trailer",
                     url=info["trailer_url"]
                 )
             ],
@@ -318,7 +283,7 @@ async def imdb_view_callback(client, query: CallbackQuery):
             )
 
     except Exception as e:
-        print(f"IMDb/TMDB View Callback Error: {e}", flush=True)
+        print(f"IMDb View Callback Error: {e}", flush=True)
         try:
             await query.answer("❌ Failed to fetch movie details.", show_alert=True)
         except Exception:
