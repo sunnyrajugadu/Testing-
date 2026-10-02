@@ -295,7 +295,15 @@ def pagination_buttons(
 
 # ================= CORE SEARCH EXECUTION ================= #
 
-async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=None, allow_spelling_suggestions=True):
+async def execute_search(
+    client,
+    user,
+    chat_id,
+    movie_name,
+    reply_to_message_id=None,
+    allow_spelling_suggestions=True,
+    original_message: Message = None
+):
     """
     Executes search and sends the files. Can be called from message handler or callback.
     """
@@ -338,7 +346,7 @@ async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=
 
                     reply_text = (
                         f"🎀\n`{movie_name}`\n\n"
-                        "**Spelling Mistake Bro ‼**\n\n"
+                        "**Spelling Mistake Bro ‼️**\n\n"
                         "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
                     )
 
@@ -372,7 +380,13 @@ async def execute_search(client, user, chat_id, movie_name, reply_to_message_id=
             return
 
         # ================= MOVIE UNTE MATHRAME REACTION ================= #
-        if reply_to_message_id:
+        # Message object unte direct ga react chesthundhi (Idi 100% fail avvadhu)
+        if original_message:
+            try:
+                await original_message.react("🔥")
+            except Exception:
+                pass
+        elif reply_to_message_id:
             try:
                 await client.send_reaction(chat_id=chat_id, message_id=reply_to_message_id, emoji="🔥")
             except Exception:
@@ -511,14 +525,15 @@ async def search_movie_handler(
         if not await enforce_fsub(client, message, payload=movie_name):
             return
 
-        # Run Search
+        # Run Search with original message passed for reaction
         await execute_search(
             client=client,
             user=message.from_user,
             chat_id=message.chat.id,
             movie_name=movie_name,
             reply_to_message_id=message.id,
-            allow_spelling_suggestions=True
+            allow_spelling_suggestions=True,
+            original_message=message
         )
 
     except Exception as e:
