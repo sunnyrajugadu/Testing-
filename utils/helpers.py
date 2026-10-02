@@ -66,8 +66,14 @@ async def get_imdb_suggestions(query: str, limit: int = 10):
                             continue
 
                         title = item.get("l")
-                        if title and title not in titles:
-                            titles.append(title)
+                        year = item.get("y")  # IMDb release year
+
+                        if title:
+                            # Year unte "Movie Name (2004)" format lo set avthundi
+                            display_title = f"{title} ({year})" if year else title
+
+                            if display_title not in titles:
+                                titles.append(display_title)
 
                         if len(titles) >= limit:
                             break
