@@ -357,7 +357,7 @@ def clean_file_name(name: str) -> str:
     if not name:
         return ""
 
-    # 1. Strips leading matched prefixes in maximum 5 passes (combining all 130+ items at once)
+    # 1. Strips leading matched prefixes in maximum 5 passes
     for _ in range(5):
         new_name = _RE_COMBINED_PREFIX.sub("", name)
         if new_name == name:
@@ -372,7 +372,22 @@ def clean_file_name(name: str) -> str:
     name = name.lstrip(" \t\r\n-_.:|")
     name = _RE_SPACES.sub(" ", name).strip()
 
-    return name
+    # 4. Remove video extension for button display
+    name = _RE_VIDEO_EXT.sub("", name)
+
+    # 5. Remove brackets like [], (), {}
+    name = re.sub(r"[\[\]\(\)\{\}]", " ", name)
+
+    # 6. Replace special characters (_, -, #, dots, symbols) with clean spaces
+    name = re.sub(r"[_\-\.+#~*&!|:;\\/]+", " ", name)
+
+    # 7. Strip out any remaining weird punctuation/symbols
+    name = re.sub(r"[^\w\s]", " ", name)
+
+    # 8. Single space normalize & strip
+    name = _RE_SPACES.sub(" ", name).strip()
+
+    return name or "Movie"
 
 
 # ============================================================
