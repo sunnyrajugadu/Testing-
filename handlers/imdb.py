@@ -11,7 +11,7 @@ from bot import app
 from utils.helpers import normalize_text
 
 
-print("✅ handlers/imdb.py imported (Direct /imdb <movie> Flow)", flush=True)
+print("✅ handlers/imdb.py imported (With Usage Guide)", flush=True)
 
 
 # ================= FETCH SUGGESTION TITLES (IMDb) ================= #
@@ -135,14 +135,19 @@ async def fetch_full_movie_details(imdb_id: str):
     return data
 
 
-# ================= ONLY /imdb <movie_name> COMMAND HANDLER ================= #
+# ================= /imdb COMMAND HANDLER WITH USAGE GUIDE ================= #
 
 @app.on_message(filters.private & filters.command(["imdb"]))
 async def imdb_search_command(client, message: Message):
     try:
         parts = message.text.split(maxsplit=1)
         if len(parts) < 2:
-            return  # Empty /imdb command ni ignore chestundi, guide messages raavu
+            return await message.reply_text(
+                "💡 <b>Usage Guide :</b>\n"
+                "» <code>/imdb &lt;movie_name&gt;</code>\n"
+                "» <i>Example :</i> <code>/imdb Salaar</code>",
+                quote=True
+            )
 
         query = parts[1].strip()
         search_msg = await message.reply_text("⚡ <b>Searching IMDb database...</b>", quote=True)
@@ -245,7 +250,7 @@ async def imdb_view_callback(client, query: CallbackQuery):
             ],
             [
                 InlineKeyboardButton(
-                    "▶️ Watch Trailer",
+                    "🎥 Watch Trailer",
                     url=info["trailer_url"]
                 )
             ]
