@@ -57,6 +57,7 @@ async def set_commands(app):
         [
             # ================= USER COMMANDS ================= #
             BotCommand("start", "Start CinemaVeta"),
+            BotCommand("imdb", "Search movie or series details on IMDb"),
             BotCommand("ping", "Check bot ping"),
             BotCommand("usage", "Bot Usage"),
             BotCommand("stats", "Bot statistics"),
