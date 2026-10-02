@@ -1,6 +1,7 @@
 import asyncio
 import time
 import html
+import re
 from datetime import datetime
 import uuid
 
@@ -127,6 +128,36 @@ def get_file_display_name(file):
         return fallback
 
     return "Movie"
+
+
+# ================= EXTRACT DISTINCT MOVIES FROM DB ================= #
+
+def extract_distinct_movies(files_list):
+    """
+    Groups database results to find unique movie names.
+    e.g., Pushpa: The Rise (2021), Pushpa 2: The Rule (2024)
+    """
+    from utils.rename import clean_movie_name
+
+    seen = {}
+    for f in files_list:
+        raw = f.get("movie_name") or f.get("file_name") or ""
+        clean = clean_movie_name(raw)
+
+        # Remove resolution/quality tags to extract clean movie name
+        clean_title = re.split(
+            r"\b(20\d\d|19\d\d|720p|1080p|480p|2160p|4k|hdrip|webrip|prehd|cam)\b",
+            clean,
+            flags=re.IGNORECASE
+        )[0].strip()
+        clean_title = clean_title.strip(" -_.:")
+
+        if clean_title and len(clean_title) > 2:
+            key = clean_title.lower()
+            if key not in seen:
+                seen[key] = clean_title
+
+    return list(seen.values())
 
 
 # ================= SEARCH LOG ================= #
@@ -312,51 +343,45 @@ async def execute_search(
 
         asyncio.create_task(increase_search_count(user_id))
 
-        # Check for franchise / multi-part suggestions first (e.g. Baahubali, Pushpa, Tuck)
-        if allow_spelling_suggestions:
-            suggestions = await get_imdb_suggestions(movie_name, limit=6)
-            
-            if suggestions and len(suggestions) > 1:
-                query_words = len(movie_name.strip().split())
-                has_exact_match = any(
-                    movie_name.strip().lower() == s.lower().strip() 
-                    or movie_name.strip().lower() == s.split("(")[0].strip().lower()
-                    for s in suggestions
-                )
-
-                # Show suggestions for short broad queries or franchise names
-                if query_words <= 2 or not has_exact_match:
-                    suggestion_buttons = []
-                    for title in suggestions:
-                        cb_data = f"spell:{user_id}:{title[:45]}"
-                        suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
-
-                    suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
-
-                    reply_text = (
-                        f"🎬 **Did you mean one of these movies?**\n\n"
-                        f"🔍 Request: `{movie_name}`\n\n"
-                        "👇 **Please select the exact movie below:**"
-                    )
-
-                    spell_msg = await client.send_message(
-                        chat_id=chat_id,
-                        text=reply_text,
-                        reply_markup=InlineKeyboardMarkup(suggestion_buttons),
-                        reply_to_message_id=reply_to_message_id
-                    )
-
-                    if spell_msg:
-                        asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=45))
-                    return
-
+        # 1. Search database first
         results = await search_files(movie_name)
 
-        # Fallback search without year brackets if initial query returns empty
         if not results and "(" in movie_name:
             clean_name = movie_name.split("(")[0].strip()
             if clean_name:
                 results = await search_files(clean_name)
+
+        # 2. Check if DB has multiple matching movies (e.g. Pushpa 1, Pushpa 2, Baahubali 1, Baahubali 2)
+        if results and allow_spelling_suggestions:
+            distinct_db_movies = extract_distinct_movies(results)
+
+            # Query short ga unte mariyu DB lo multiple movies unte mathrame suggestion buttons chupisthundhi
+            query_words = len(movie_name.strip().split())
+            if len(distinct_db_movies) > 1 and query_words <= 2:
+                buttons = []
+                for title in distinct_db_movies[:8]:
+                    buttons.append([
+                        InlineKeyboardButton(
+                            f"🎬 {title}",
+                            callback_data=f"spell:{user_id}:{title[:45]}"
+                        )
+                    ])
+
+                buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
+
+                prompt_msg = await client.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        f"🎬 **Multiple movies found in DB for:** `{movie_name}`\n\n"
+                        "👇 **Please select which movie you want:**"
+                    ),
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    reply_to_message_id=reply_to_message_id
+                )
+
+                if prompt_msg:
+                    asyncio.create_task(auto_delete_message(prompt_msg, delay_seconds=45))
+                return
 
         asyncio.create_task(
             log_search(
@@ -369,31 +394,32 @@ async def execute_search(
 
         # ================= NO RESULTS ================= #
         if not results:
-            suggestions = await get_imdb_suggestions(movie_name, limit=8)
-            if suggestions and allow_spelling_suggestions:
-                suggestion_buttons = []
-                for title in suggestions:
-                    cb_data = f"spell:{user_id}:{title[:45]}"
-                    suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
+            if allow_spelling_suggestions:
+                suggestions = await get_imdb_suggestions(movie_name, limit=8)
+                if suggestions:
+                    suggestion_buttons = []
+                    for title in suggestions:
+                        cb_data = f"spell:{user_id}:{title[:45]}"
+                        suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
 
-                suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
+                    suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
 
-                reply_text = (
-                    f"🎀\n`{movie_name}`\n\n"
-                    "**Spelling Mistake Bro ‼️**\n\n"
-                    "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
-                )
+                    reply_text = (
+                        f"🎀\n`{movie_name}`\n\n"
+                        "**Spelling Mistake Bro ‼️**\n\n"
+                        "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
+                    )
 
-                spell_msg = await client.send_message(
-                    chat_id=chat_id,
-                    text=reply_text,
-                    reply_markup=InlineKeyboardMarkup(suggestion_buttons),
-                    reply_to_message_id=reply_to_message_id
-                )
+                    spell_msg = await client.send_message(
+                        chat_id=chat_id,
+                        text=reply_text,
+                        reply_markup=InlineKeyboardMarkup(suggestion_buttons),
+                        reply_to_message_id=reply_to_message_id
+                    )
 
-                if spell_msg:
-                    asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=30))
-                return
+                    if spell_msg:
+                        asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=30))
+                    return
 
             no_result_message = await client.send_message(
                 chat_id=chat_id,
@@ -417,7 +443,7 @@ async def execute_search(
         user_name = user.first_name or "User"
         user_mention = f'<a href="tg://user?id={user.id}"><b>{html.escape(user_name)}</b></a>'
 
-        # Fetch Landscape Movie Banner & Details
+        # Fetch Landscape Movie Banner & Details from TMDB/IMDb
         movie_details = await get_imdb_movie_details(movie_name)
         landscape_banner_url = movie_details.get("image") if movie_details else None
 
@@ -428,7 +454,7 @@ async def execute_search(
                 detected_audios.update([a.strip() for a in aud.split(",") if a.strip()])
         audio_str = ", ".join(list(detected_audios)[:4]) if detected_audios else "Multi"
 
-        # Build Caption matching the requested layout
+        # Build Caption
         caption_lines = [
             f"🌟✨ <b>Movie Request:</b> <code>{html.escape(movie_name)}</code> 🪄\n"
         ]
@@ -472,7 +498,7 @@ async def execute_search(
         asyncio.create_task(save_search_cache(search_id, cache_files, movie_name))
         asyncio.create_task(update_search_state(search_id, cache_files[:PAGE_LIMIT], "All", 1))
 
-        # ================= BUILD FILE BUTTONS ================= #
+        # ================= BUILD BUTTONS ================= #
         buttons = []
         for file in cache_files[:PAGE_LIMIT]:
             buttons.append(
@@ -598,11 +624,11 @@ async def search_movie_handler(
         if not movie_name:
             return
 
-        # ================= FORCE SUBSCRIBE VERIFICATION ================= #
+        # Force Subscribe Verification
         if not await enforce_fsub(client, message, payload=movie_name):
             return
 
-        # Execute search with franchise suggestion triggers
+        # Execute search with DB-only franchise suggestions
         await execute_search(
             client=client,
             user=message.from_user,
