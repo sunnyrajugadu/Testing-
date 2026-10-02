@@ -1462,11 +1462,17 @@ async def imdb_view_callback(client, query: CallbackQuery):
             )
 
         caption_lines.extend([
-            f"⭐ <b>IMDb Rating :</b> {rating_disp}{certificate_disp}{vote_disp}",
+            f"⭐ <b>IMDb Rating :</b> {rating_disp}{vote_disp}",
             f"🗓 <b>Release Info :</b> "
             f"{html.escape(str(info['release_date']) if info['release_date'] != 'N/A' else 'Not Available')}",
             f"⏳ <b>Runtime :</b> {html.escape(str(info['runtime']) if info['runtime'] != 'N/A' else 'Not Available')}",
         ])
+
+        if info.get("certificate"):
+            caption_lines.append(
+                f"🔞 <b>Certificate :</b> "
+                f"{html.escape(str(info['certificate']))}"
+            )
 
         directors = info.get("director") or []
         director_links = []
@@ -1495,11 +1501,6 @@ async def imdb_view_callback(client, query: CallbackQuery):
             f"🌍 <b>Country Of Origin :</b> {country_str}",
         ])
 
-        if info.get("certificate"):
-            caption_lines.append(
-                f"🔞 <b>Certificate :</b> "
-                f"{html.escape(str(info['certificate']))}"
-            )
 
         caption_lines.extend([
             "",
