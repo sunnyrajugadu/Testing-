@@ -5,6 +5,7 @@ import re
 from datetime import datetime
 import uuid
 import aiohttp
+import urllib.parse
 
 from pyrogram import filters
 from pyrogram.types import (
@@ -183,7 +184,6 @@ def extract_distinct_movies(files_list, search_query: str):
         if clean and len(clean) >= 3 and query_norm in clean.lower():
             raw_titles.append(clean)
 
-    # Group similar titles into root names
     distinct = []
     for cand in sorted(raw_titles, key=len):
         cand_lower = cand.lower().strip()
@@ -253,7 +253,7 @@ async def log_search(
 
 # ================= AUTO DELETE HELPER ================= #
 
-async def auto_delete_message(message, delay_seconds: int = 30):
+async def auto_delete_message(message, delay_seconds: int = 40):
     try:
         await asyncio.sleep(delay_seconds)
         await message.delete()
@@ -437,48 +437,35 @@ async def execute_search(
             )
         )
 
-        # ================= NO RESULTS ================= #
+        # ================= NO RESULTS (CUSTOM PROMPT & BUTTONS) ================= #
         if not results:
-            if allow_spelling_suggestions:
-                suggestions = await get_imdb_suggestions(movie_name, limit=8)
-                if suggestions:
-                    suggestion_buttons = []
-                    for title in suggestions:
-                        clean_disp = title.split("(")[0].strip() if "(" in title else title
-                        cb_data = f"spell:{user_id}:{clean_disp[:45]}"
-                        suggestion_buttons.append([InlineKeyboardButton(clean_disp, callback_data=cb_data)])
+            google_query = urllib.parse.quote_plus(movie_name)
+            google_search_url = f"https://www.google.com/search?q={google_query}"
 
-                    suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
+            no_result_text = f"""✨ **Oops! I couldn't find "{movie_name}" in my database** 📀
 
-                    reply_text = (
-                        f"`{movie_name}`\n\n"
-                        "**Spelling Mistake Bro ‼️**\n\n"
-                        "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
-                    )
+🔍 **Search on Google and check if your spelling is correct.**
 
-                    spell_msg = await client.send_message(
-                        chat_id=chat_id,
-                        text=reply_text,
-                        reply_markup=InlineKeyboardMarkup(suggestion_buttons),
-                        reply_to_message_id=reply_to_message_id
-                    )
+📖 **Please read the instructions to get better results.**"""
 
-                    if spell_msg:
-                        asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=30))
-                    return
+            no_result_buttons = [
+                [
+                    InlineKeyboardButton("‼️ INSTRUCTIONS ‼️", callback_data="search_instructions")
+                ],
+                [
+                    InlineKeyboardButton("♻️ GOOGLE SEARCH ♻️", url=google_search_url)
+                ]
+            ]
 
             no_result_message = await client.send_message(
                 chat_id=chat_id,
-                text=f"""
-🪄 **Oops! I couldn't find :** `{movie_name}` 📀
-
-🔎 **Try a different spelling or share more details so I can hunt it down!** 🍿
-""",
+                text=no_result_text,
+                reply_markup=InlineKeyboardMarkup(no_result_buttons),
                 reply_to_message_id=reply_to_message_id
             )
 
             if no_result_message:
-                asyncio.create_task(auto_delete_message(no_result_message, delay_seconds=10))
+                asyncio.create_task(auto_delete_message(no_result_message, delay_seconds=40))
 
             return
 
@@ -510,7 +497,7 @@ async def execute_search(
                 target_lang = TMDB_LANG_MAP[l]
                 break
 
-        # Fetch Landscape Movie Banner & Details from TMDB
+        # Fetch Landscape Movie Banner & Details from TMDB/IMDb
         movie_details = await get_imdb_movie_details(movie_name, preferred_lang=target_lang)
         landscape_banner_url = movie_details.get("image") if movie_details else None
 
