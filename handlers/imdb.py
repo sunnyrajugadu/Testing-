@@ -11,7 +11,36 @@ from bot import app
 from utils.helpers import normalize_text
 
 
-print("✅ handlers/imdb.py imported (IMDb Graph API & Direct Photo Fix)", flush=True)
+print("✅ handlers/imdb.py imported (Runtime Hours & Clean Photo Fix)", flush=True)
+
+
+# ================= FORMAT RUNTIME (Minutes to Hours & Mins) ================= #
+
+def format_runtime(runtime_str):
+    if not runtime_str or runtime_str == "N/A":
+        return "N/A"
+    
+    # If it's already seasons (e.g. series)
+    if "Season" in runtime_str or "Seasons" in runtime_str:
+        return runtime_str
+
+    try:
+        # Extract digits from string like "175 min" or "175"
+        import re
+        numbers = re.findall(r'\d+', runtime_str)
+        if numbers:
+            total_minutes = int(numbers[0])
+            hours = total_minutes // 60
+            minutes = total_minutes % 60
+            if hours > 0 and minutes > 0:
+                return f"{hours} hrs {minutes} mins"
+            elif hours > 0:
+                return f"{hours} hrs"
+            else:
+                return f"{minutes} mins"
+    except Exception:
+        pass
+    return runtime_str
 
 
 # ================= FETCH SUGGESTION TITLES (IMDb) ================= #
@@ -79,13 +108,10 @@ async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fal
         "trailer_url": None
     }
 
-    # 1. Fetch from IMDb Public Mobile API (Ensures 0% N/A failure rate)
+    # 1. Fetch from IMDb Suggestion API for robust fallback
     try:
-        api_url = f"https://sg.media-imdb.com/suggests/{imdb_id[0]}/{imdb_id}.json"
-        # Alternative IMDb GraphQL/JSON endpoint
+        sugg_url = f"https://v3.sg.media-imdb.com/suggestion/t/{imdb_id}.json"
         async with aiohttp.ClientSession() as session:
-            # Let's pull directly using aiohttp from IMDb title json endpoint if available, or use suggestion API
-            sugg_url = f"https://v3.sg.media-imdb.com/suggestion/t/{imdb_id}.json"
             async with session.get(sugg_url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
                 if resp.status == 200:
                     j_data = await resp.json()
@@ -102,9 +128,9 @@ async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fal
                                 data["poster"] = it.get("i", {}).get("imageUrl")
                             break
     except Exception as e:
-        print(f"IMDb Mobile API Error: {e}", flush=True)
+        print(f"IMDb Suggestion API Error: {e}", flush=True)
 
-    # 2. Fetch extra details from OMDB with clean error handling
+    # 2. Fetch detailed metadata from OMDB
     omdb_url = f"https://www.omdbapi.com/?i={imdb_id}&plot=full&apikey=trilogy"
     try:
         async with aiohttp.ClientSession() as session:
@@ -121,7 +147,7 @@ async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fal
                         if o_data.get("Released") and o_data.get("Released") != "N/A":
                             data["release_date"] = o_data.get("Released")
                         if o_data.get("Runtime") and o_data.get("Runtime") != "N/A":
-                            data["runtime"] = o_data.get("Runtime")
+                            data["runtime"] = format_runtime(o_data.get("Runtime"))
                         if o_data.get("Director") and o_data.get("Director") != "N/A":
                             data["director"] = o_data.get("Director")
 
@@ -143,12 +169,12 @@ async def fetch_full_movie_details(imdb_id: str, fallback_title: str = None, fal
                             data["storyline"] = plot
 
                         poster = o_data.get("Poster")
-                        if poster and poster != "N/A" and not data["poster"]:
+                        if poster and poster != "N/A":
                             data["poster"] = poster
     except Exception as e:
         print(f"OMDB Fetch Error: {e}", flush=True)
 
-    # High resolution poster fix for Telegram photo rendering
+    # High resolution poster fix for clean Telegram photo rendering
     if data["poster"]:
         try:
             if "_V1_" in data["poster"]:
