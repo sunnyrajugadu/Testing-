@@ -1,4 +1,6 @@
 import asyncio
+import time
+import html
 from datetime import datetime
 import uuid
 
@@ -12,7 +14,7 @@ from pyrogram.types import (
 from bot import app
 from config import LOG_CHANNEL_ID
 from filters.fsub import enforce_fsub
-from utils.helpers import get_imdb_suggestions
+from utils.helpers import get_imdb_suggestions, get_imdb_movie_details
 from database.models import (
     search_files,
     increase_search_count,
@@ -306,6 +308,7 @@ async def execute_search(
     """
     Executes search and sends the files. Can be called from message handler or callback.
     """
+    start_time = time.time()
     try:
         user_id = user.id
         print(f"🔍 SEARCH : {movie_name}", flush=True)
@@ -378,6 +381,57 @@ async def execute_search(
 
             return
 
+        # ================= SEARCH METRICS & IMDB DETAILS ================= #
+        elapsed_sec = f"{time.time() - start_time:.2f}"
+        total_files_count = len(results)
+
+        # Clickable user profile
+        user_name = user.first_name or "User"
+        user_mention = f'<a href="tg://user?id={user.id}"><b>{html.escape(user_name)}</b></a>'
+
+        # Fetch IMDb Data (Poster, Rating, Runtime, Genres)
+        imdb_data = await get_imdb_movie_details(movie_name)
+        poster_url = imdb_data.get("image") if imdb_data else None
+
+        # Detect Available Audios in Files
+        detected_audios = set()
+        for f in results:
+            aud = format_audio(f.get("audio"))
+            if aud:
+                detected_audios.update([a.strip() for a in aud.split(",") if a.strip()])
+        audio_str = ", ".join(list(detected_audios)[:4]) if detected_audios else "Multi"
+
+        # Build Caption matching the exact request layout
+        caption_lines = [
+            f"🌟✨ <b>Movie Request:</b> <code>{html.escape(movie_name)}</code> 🪄\n"
+        ]
+
+        if imdb_data and imdb_data.get("title"):
+            m_title = imdb_data['title']
+            if imdb_data.get("year"):
+                m_title += f" ({imdb_data['year']})"
+            caption_lines.append(f"🎬 <b>{html.escape(m_title)}</b>\n")
+
+            if imdb_data.get("rating") and imdb_data["rating"] != "N/A":
+                caption_lines.append(f"⭐ <b>RATING :</b> <code>{imdb_data['rating']} / 10</code>")
+
+            if imdb_data.get("genres") and imdb_data["genres"] != "N/A":
+                caption_lines.append(f"🎭 <b>GENRE :</b> <code>{imdb_data['genres']}</code>")
+
+            if imdb_data.get("runtime") and imdb_data["runtime"] != "N/A":
+                caption_lines.append(f"⏳ <b>RUN TIME :</b> <code>{imdb_data['runtime']}</code>")
+
+            caption_lines.append(f"🔊 <b>AUDIO :</b> <code>{audio_str}</code>\n")
+
+        caption_lines.extend([
+            f"📁 <b>TOTAL FILES :</b> <code>{total_files_count}</code>",
+            f"📝 <b>REQUESTED BY :</b> {user_mention}",
+            f"⏰ <b>RESULT IN :</b> <code>{elapsed_sec} s</code>\n",
+            "🥦 <b><i>Requested Files</i></b> 👇"
+        ])
+
+        final_caption = "\n".join(caption_lines)
+
         # ================= SEARCH ID & CACHING ================= #
         search_id = str(uuid.uuid4())
         menu_timestamp = int(datetime.now().timestamp())
@@ -432,17 +486,30 @@ async def execute_search(
             )
         )
 
-        # ================= SEND SEARCH RESULTS ================= #
-        await client.send_message(
-            chat_id=chat_id,
-            text=f"""
-🌟✨ **Movie Request:** `{movie_name}` 🪄
+        reply_markup = InlineKeyboardMarkup(buttons)
 
-🍿 **Here is your files!**
-""",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            reply_to_message_id=reply_to_message_id
-        )
+        # ================= SEND PHOTO OR FALLBACK TEXT ================= #
+        sent_success = False
+        if poster_url:
+            try:
+                await client.send_photo(
+                    chat_id=chat_id,
+                    photo=poster_url,
+                    caption=final_caption,
+                    reply_markup=reply_markup,
+                    reply_to_message_id=reply_to_message_id
+                )
+                sent_success = True
+            except Exception as pe:
+                print(f"⚠️ Photo dispatch failed ({pe}), falling back to text...", flush=True)
+
+        if not sent_success:
+            await client.send_message(
+                chat_id=chat_id,
+                text=final_caption,
+                reply_markup=reply_markup,
+                reply_to_message_id=reply_to_message_id
+            )
 
         print("✅ SEARCH RESULT SENT", flush=True)
 
