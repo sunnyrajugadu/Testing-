@@ -457,6 +457,100 @@ def language_names(value):
 
 
 # ============================================================
+# Google certificate fallback
+# ============================================================
+
+GOOGLE_SEARCH_URL = "https://www.google.com/search"
+
+
+async def fetch_google_certificate(title, year=None):
+    """Fetch the movie certificate from Google's search result/knowledge panel.
+
+    IMDb can return a generic/empty certificate on some title pages. Google often
+    exposes the regional film certificate in its result data, so use it as a
+    certificate-only fallback without changing any other IMDb metadata.
+    """
+    title = clean_text(title, "")
+    if not title:
+        return None
+
+    query = f'"{title}" {year or ""} certificate movie'.strip()
+    params = {
+        "q": query,
+        "hl": "en",
+        "gl": "IN",
+        "num": "10",
+    }
+    headers = dict(IMDB_HEADERS)
+    headers.update({
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Referer": "https://www.google.com/",
+    })
+
+    # Keep this intentionally narrow: these are certificate/classification
+    # values, not arbitrary numbers that may appear in a Google result.
+    certificate_pattern = re.compile(
+        r"(?:U\s*/\s*A|U\.\s*A\.|U\s*A|U|A|UA|PG-13|PG|G|NC-17|R|TV-MA|TV-14|TV-PG|TV-G|Not\s+Rated|Not\s+Rated|Unrated)",
+        re.I,
+    )
+
+    try:
+        async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT, headers=headers) as session:
+            async with session.get(GOOGLE_SEARCH_URL, params=params, allow_redirects=True) as response:
+                if response.status != 200:
+                    return None
+                raw = await response.text(errors="ignore")
+
+        if not raw:
+            return None
+
+        # Google search HTML contains both visible result text and structured
+        # snippets. Convert it to readable text first.
+        text = html.unescape(raw)
+        text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.I | re.S)
+        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.I | re.S)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+
+        # Highest-confidence forms: an explicit Certificate/Certification
+        # label immediately followed by the value.
+        labelled_patterns = [
+            r"(?:certificate|certification|certified\s+as)\s*(?:rating)?\s*[:\-]\s*([A-Za-z0-9/ .-]{1,12})",
+            r"(?:certificate|certification)\s+(?:is|was)\s+(?:an?\s+)?([A-Za-z0-9/ .-]{1,12})",
+            r"(?:rated|rating)\s*[:\-]?\s*([A-Za-z0-9/.-]{1,10})",
+        ]
+
+        for pattern in labelled_patterns:
+            match = re.search(pattern, text, re.I)
+            if not match:
+                continue
+            candidate = match.group(1).strip(" .,:;|-_")
+            value_match = certificate_pattern.search(candidate)
+            if value_match:
+                value = value_match.group(0).strip()
+                normalized = normalize_certificate(value)
+                if normalized:
+                    return normalized
+
+        # Google sometimes renders the knowledge-panel field as
+        # "Certificate A" without punctuation. Limit the search to a small
+        # window around the word so unrelated ratings in the page are ignored.
+        for match in re.finditer(r"(?:certificate|certification)", text, re.I):
+            window = text[match.end():match.end() + 80]
+            value_match = certificate_pattern.search(window)
+            if value_match:
+                value = value_match.group(0).strip()
+                normalized = normalize_certificate(value)
+                if normalized:
+                    return normalized
+
+    except Exception as exc:
+        print(f"Google Certificate Error [{title}]: {exc}", flush=True)
+
+    return None
+
+
+# ============================================================
 # IMDb page metadata
 # ============================================================
 
@@ -1150,6 +1244,19 @@ async def fetch_full_movie_details(
                 if text and text.casefold() != str(data["title"]).casefold():
                     aka_values.append(text)
             data["aka"] = unique_strings(aka_values)[:8]
+
+    # IMDb sometimes leaves certificate empty/generic. Fetch ONLY the
+    # certificate from Google; every other field remains exactly as collected
+    # above from IMDb. If Google cannot provide it, keep the IMDb value.
+    try:
+        google_certificate = await fetch_google_certificate(
+            data["title"],
+            data.get("year"),
+        )
+        if google_certificate:
+            data["certificate"] = google_certificate
+    except Exception as exc:
+        print(f"Google Certificate Fallback Error [{imdb_id}]: {exc}", flush=True)
 
     # Do not print the literal N/A for these fields. IMDb can genuinely omit
     # metadata for some titles, so use a neutral label only as a last resort.
