@@ -87,7 +87,7 @@ async def fetch_person_results(query: str):
 
 # ================= /people COMMAND HANDLER ================= #
 
-@app.on_message(filters.private & filters.command(["people"]))
+@app.on_message(filters.private & filters.command(["people","pe"]))
 async def person_search_command(client, message: Message):
     try:
         parts = message.text.split(maxsplit=1)
