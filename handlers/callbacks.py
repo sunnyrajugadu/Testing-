@@ -2442,3 +2442,89 @@ async def back_search(
         except Exception:
 
             pass
+
+
+# ============================================================
+# SPELLING SUGGESTION SELECTION CALLBACK
+# ============================================================
+
+@app.on_callback_query(
+    filters.regex(r"^spell:")
+)
+async def spelling_suggestion_callback(
+    client,
+    query: CallbackQuery
+):
+    """
+    Handles user clicking on spelling suggestion button.
+    Directly triggers the search using the exact corrected title.
+    """
+    try:
+        parts = query.data.split(":", 2)
+
+        if len(parts) < 3:
+            return await query.answer("❌ Invalid suggestion data", show_alert=True)
+
+        _, user_id_str, selected_movie = parts
+
+        try:
+            target_user_id = int(user_id_str)
+        except ValueError:
+            target_user_id = query.from_user.id
+
+        # Verify button belongs to the requester
+        if query.from_user.id != target_user_id:
+            return await query.answer(
+                "⚠️ This suggestion button is not for you",
+                show_alert=True
+            )
+
+        await query.answer(f"🔎 Searching: {selected_movie}")
+
+        # Delete the spelling suggestions menu
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        # Trigger direct search with selected title
+        from handlers.search import execute_search
+
+        reply_to_id = query.message.reply_to_message.id if query.message and query.message.reply_to_message else None
+
+        await execute_search(
+            client=client,
+            user=query.from_user,
+            chat_id=query.message.chat.id,
+            movie_name=selected_movie,
+            reply_to_message_id=reply_to_id
+        )
+
+    except Exception as e:
+        print(f"❌ SPELL SUGGESTION CALLBACK ERROR: {e}", flush=True)
+        try:
+            await query.answer("❌ Failed to process movie selection", show_alert=True)
+        except Exception:
+            pass
+
+
+# ============================================================
+# CLOSE BUTTON CALLBACK
+# ============================================================
+
+@app.on_callback_query(
+    filters.regex(r"^close$")
+)
+async def close_menu_callback(
+    client,
+    query: CallbackQuery
+):
+    """Deletes menu on close button click."""
+    try:
+        await query.message.delete()
+        await query.answer("Closed ✖")
+    except Exception:
+        try:
+            await query.answer()
+        except Exception:
+            pass
