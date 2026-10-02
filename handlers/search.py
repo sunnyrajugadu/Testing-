@@ -42,6 +42,15 @@ FIXED_LANGUAGES = [
     "Kannada"
 ]
 
+TMDB_LANG_MAP = {
+    "Telugu": "te",
+    "Tamil": "ta",
+    "Hindi": "hi",
+    "Malayalam": "ml",
+    "Kannada": "kn",
+    "English": "en"
+}
+
 
 # ================= SIZE FORMAT ================= #
 
@@ -139,6 +148,10 @@ def clean_movie_base_title(raw_name: str, query: str = "") -> str:
         if match and match.start() > 0:
             title = title[match.start():]
 
+    # Preserve release year
+    year_match = re.search(r"\b(19\d\d|20\d\d)\b", title)
+    preserved_year = year_match.group(1) if year_match else ""
+
     # 3. Strip all prints, resolutions, audios, codecs and tech flags
     tech_patterns = r"\b(20\d\d|19\d\d|720p|1080p|480p|2160p|4k|hq|prehd|hdrip|webrip|web-dl|web|dvdrip|cam|camrip|hdtc|hevc|x264|x265|aac|ac3|ddp|esub|sub|vers?|hdr|truehd|remux|avc)\b.*"
     title = re.sub(tech_patterns, "", title, flags=re.IGNORECASE)
@@ -153,6 +166,9 @@ def clean_movie_base_title(raw_name: str, query: str = "") -> str:
     title = re.sub(r"[_.\-+:]+", " ", title)
     title = re.sub(r"[^\w\s]", "", title)
     title = re.sub(r"\s+", " ", title).strip()
+
+    if preserved_year and preserved_year not in title and len(title.split()) == 1:
+        title = f"{title} {preserved_year}"
 
     return title
 
@@ -174,15 +190,12 @@ def extract_distinct_movies(files_list, search_query: str):
         matched = False
         for idx, exist in enumerate(distinct):
             exist_lower = exist.lower().strip()
-            # If cand and existing share major root
             if cand_lower.startswith(exist_lower) or exist_lower.startswith(cand_lower):
                 matched = True
                 break
         if not matched:
             distinct.append(cand)
 
-    # Check if all results essentially belong to the exact searched movie
-    # If the distinct list only has variations of the same title, collapse it
     collapsed = []
     for t in distinct:
         t_clean = t.title()
@@ -383,15 +396,12 @@ async def execute_search(
             if clean_name:
                 results = await search_files(clean_name)
 
-        # 2. Check if DB has genuinely multiple franchise parts (e.g. Baahubali 1 vs Baahubali 2)
+        # 2. Check if DB has genuinely multiple franchise parts
         if results and allow_spelling_suggestions:
             distinct_db_movies = extract_distinct_movies(results, movie_name)
 
-            # Prompts ONLY when distinct movies are actually multiple different titles
-            # and not equal to the exact search query
             if len(distinct_db_movies) > 1 and not (len(distinct_db_movies) == 1 and distinct_db_movies[0].lower() == movie_name.lower()):
                 query_words = len(movie_name.strip().split())
-                # If search query has 1-2 words and matches different franchises
                 if query_words <= 2:
                     buttons = []
                     for title in distinct_db_movies[:8]:
@@ -479,11 +489,7 @@ async def execute_search(
         user_name = user.first_name or "User"
         user_mention = f'<a href="tg://user?id={user.id}"><b>{html.escape(user_name)}</b></a>'
 
-        # Fetch Landscape Movie Banner & Details from TMDB
-        movie_details = await get_imdb_movie_details(movie_name)
-        landscape_banner_url = movie_details.get("image") if movie_details else None
-
-        # Detect and format Audio Languages
+        # Detect audio languages
         detected_audios = set()
         for f in results:
             langs = extract_file_languages(f)
@@ -496,6 +502,17 @@ async def execute_search(
                 sorted_audios.append(l)
 
         audio_str = ", ".join(sorted_audios) if sorted_audios else "Multi"
+
+        # Dynamically determine original language for TMDB
+        target_lang = "te"
+        for l in sorted_audios:
+            if l in TMDB_LANG_MAP:
+                target_lang = TMDB_LANG_MAP[l]
+                break
+
+        # Fetch Landscape Movie Banner & Details from TMDB
+        movie_details = await get_imdb_movie_details(movie_name, preferred_lang=target_lang)
+        landscape_banner_url = movie_details.get("image") if movie_details else None
 
         # Direct IMDb Movie Details Caption
         caption_lines = []
@@ -700,6 +717,6 @@ async def search_movie_handler(
     except Exception as e:
         print(f"❌ SEARCH HANDLER ERROR : {e}", flush=True)
         try:
-            await message.reply_text("⚠️ Something went wrong.", quote=True)
+            await message.reply_text("⚠ Something went wrong.", quote=True)
         except Exception:
             pass
