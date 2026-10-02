@@ -82,3 +82,65 @@ async def get_imdb_suggestions(query: str, limit: int = 10):
     except Exception as e:
         print(f"IMDb Error: {e}")
     return []
+
+
+async def get_imdb_movie_details(query: str):
+    """
+    Fetches IMDb Poster Image, Title, Year, Rating, Genres, and Runtime.
+    """
+    clean_q = normalize_text(query)
+    if not clean_q:
+        return None
+
+    first_char = clean_q[0]
+    sugg_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{clean_q}.json"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(sugg_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                
+                movie_item = None
+                for item in data.get("d", []):
+                    item_id = str(item.get("id", ""))
+                    if item_id.startswith("tt"):
+                        movie_item = item
+                        break
+                
+                if not movie_item:
+                    return None
+
+                movie_id = movie_item.get("id")
+                title = movie_item.get("l")
+                year = movie_item.get("y")
+                image = movie_item.get("i", {}).get("imageUrl") if movie_item.get("i") else None
+
+                details = {
+                    "title": title,
+                    "year": year,
+                    "image": image,
+                    "rating": "N/A",
+                    "genres": "N/A",
+                    "runtime": "N/A"
+                }
+
+                # OMDB API dwaara Rating, Genres, and Runtime thechukovadam
+                api_url = f"https://www.omdbapi.com/?i={movie_id}&apikey=trilogy"
+                try:
+                    async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=3)) as o_resp:
+                        if o_resp.status == 200:
+                            omdb_data = await o_resp.json()
+                            if omdb_data.get("Response") == "True":
+                                details["rating"] = omdb_data.get("imdbRating", "N/A")
+                                details["genres"] = omdb_data.get("Genre", "N/A")
+                                details["runtime"] = omdb_data.get("Runtime", "N/A")
+                except Exception:
+                    pass
+
+                return details
+
+    except Exception as e:
+        print(f"IMDb Details Error: {e}")
+    return None
