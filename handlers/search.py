@@ -184,6 +184,7 @@ def extract_distinct_movies(files_list, search_query: str):
         if clean and len(clean) >= 3 and query_norm in clean.lower():
             raw_titles.append(clean)
 
+    # Group similar titles into root names
     distinct = []
     for cand in sorted(raw_titles, key=len):
         cand_lower = cand.lower().strip()
@@ -437,8 +438,38 @@ async def execute_search(
             )
         )
 
-        # ================= NO RESULTS (CUSTOM PROMPT & BUTTONS) ================= #
+        # ================= NO RESULTS / SPELLING SUGGESTIONS ================= #
         if not results:
+            # 1. First check for spelling mistakes using IMDb suggestions
+            if allow_spelling_suggestions:
+                suggestions = await get_imdb_suggestions(movie_name, limit=8)
+                if suggestions:
+                    suggestion_buttons = []
+                    for title in suggestions:
+                        clean_disp = title.split("(")[0].strip() if "(" in title else title
+                        cb_data = f"spell:{user_id}:{clean_disp[:45]}"
+                        suggestion_buttons.append([InlineKeyboardButton(clean_disp, callback_data=cb_data)])
+
+                    suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
+
+                    reply_text = (
+                        f"`{movie_name}`\n\n"
+                        "**Spelling Mistake Bro ‼️**\n\n"
+                        "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
+                    )
+
+                    spell_msg = await client.send_message(
+                        chat_id=chat_id,
+                        text=reply_text,
+                        reply_markup=InlineKeyboardMarkup(suggestion_buttons),
+                        reply_to_message_id=reply_to_message_id
+                    )
+
+                    if spell_msg:
+                        asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=30))
+                    return
+
+            # 2. Pure No Results: Display the requested prompt & buttons
             google_query = urllib.parse.quote_plus(movie_name)
             google_search_url = f"https://www.google.com/search?q={google_query}"
 
@@ -497,7 +528,7 @@ async def execute_search(
                 target_lang = TMDB_LANG_MAP[l]
                 break
 
-        # Fetch Landscape Movie Banner & Details from TMDB/IMDb
+        # Fetch Landscape Movie Banner & Details from TMDB
         movie_details = await get_imdb_movie_details(movie_name, preferred_lang=target_lang)
         landscape_banner_url = movie_details.get("image") if movie_details else None
 
@@ -704,6 +735,6 @@ async def search_movie_handler(
     except Exception as e:
         print(f"❌ SEARCH HANDLER ERROR : {e}", flush=True)
         try:
-            await message.reply_text("⚠ Something went wrong.", quote=True)
+            await message.reply_text("⚠️ Something went wrong.", quote=True)
         except Exception:
             pass
