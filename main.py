@@ -97,6 +97,8 @@ async def main():
     import handlers.delete
     import handlers.deep_links
     import handlers.inline
+    import handlers.imdb
+    
 
     print("✅ Handlers Loaded", flush=True)
 
