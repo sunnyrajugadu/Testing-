@@ -84,13 +84,19 @@ async def get_imdb_suggestions(query: str, limit: int = 10):
     return []
 
 
-async def get_imdb_movie_details(query: str):
+async def get_imdb_movie_details(query: str, preferred_lang: str = "te"):
     """
     Fetches high-resolution landscape (16:9) banner image, Title, Year, Rating, Genres, and Runtime.
-    Uses personal TMDB API Key with smart landscape/backdrop fallback.
+    Dynamically prioritizes the requested original language (te, en, ta, hi, ml, kn).
     """
+    # Extract year if present in query (e.g. 'Kalki 2019' -> 2019)
+    extracted_year = None
+    year_match = re.search(r"\b(19\d\d|20\d\d)\b", query)
+    if year_match:
+        extracted_year = year_match.group(1)
+
     # Brackets lo unna year & extra tags clean chesi search cheyadam
-    clean_q = re.sub(r"\(\d{4}\)", "", query).strip()
+    clean_q = re.sub(r"\(\d{4}\)|\b(19\d\d|20\d\d)\b", "", query).strip()
     clean_q = normalize_text(clean_q)
     if not clean_q:
         return None
@@ -100,17 +106,25 @@ async def get_imdb_movie_details(query: str):
     
     details = {
         "title": query.title(),
-        "year": None,
+        "year": extracted_year,
         "image": None,
         "rating": "N/A",
         "genres": "N/A",
         "runtime": "N/A"
     }
 
+    # Language priority order: preferred_lang first, then English ('en'), then Telugu ('te')
+    target_langs = [preferred_lang]
+    if "en" not in target_langs:
+        target_langs.append("en")
+    if "te" not in target_langs:
+        target_langs.append("te")
+
     try:
         async with aiohttp.ClientSession() as session:
-            # 1. Direct Movie Search on TMDB
-            tmdb_movie_url = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={clean_q}&include_adult=false"
+            # 1. Direct Movie Search on TMDB with optional year
+            year_query = f"&primary_release_year={extracted_year}" if extracted_year else ""
+            tmdb_movie_url = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={clean_q}{year_query}&include_adult=false"
             
             async with session.get(tmdb_movie_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
                 results = []
@@ -118,7 +132,15 @@ async def get_imdb_movie_details(query: str):
                     t_data = await resp.json()
                     results = t_data.get("results", [])
 
-                # Fallback to multi-search if direct movie search is empty
+                # Fallback without year constraint if direct year search returned empty
+                if not results and extracted_year:
+                    fallback_url = f"https://api.themoviedb.org/3/search/movie?api_key={tmdb_key}&query={clean_q}&include_adult=false"
+                    async with session.get(fallback_url, timeout=aiohttp.ClientTimeout(total=4)) as fb_resp:
+                        if fb_resp.status == 200:
+                            fb_data = await fb_resp.json()
+                            results = fb_data.get("results", [])
+
+                # Fallback to multi-search if direct movie search is still empty
                 if not results:
                     tmdb_multi_url = f"https://api.themoviedb.org/3/search/multi?api_key={tmdb_key}&query={clean_q}"
                     async with session.get(tmdb_multi_url, timeout=aiohttp.ClientTimeout(total=4)) as m_resp:
@@ -127,15 +149,37 @@ async def get_imdb_movie_details(query: str):
                             results = m_data.get("results", [])
 
                 if results:
-                    # Landscape backdrop unna item ni first priority ivvadam
-                    landscape_item = next((r for r in results if r.get("backdrop_path")), results[0])
+                    best_item = None
 
-                    title = landscape_item.get("title") or landscape_item.get("name") or query.title()
-                    release_date = landscape_item.get("release_date") or landscape_item.get("first_air_date") or ""
-                    year = release_date.split("-")[0] if release_date else None
+                    # Preference 1: Target language (preferred_lang / en) + landscape backdrop
+                    for lang in target_langs:
+                        for r in results:
+                            if r.get("original_language") == lang and r.get("backdrop_path"):
+                                best_item = r
+                                break
+                        if best_item:
+                            break
+
+                    # Preference 2: Target language + poster
+                    if not best_item:
+                        for lang in target_langs:
+                            for r in results:
+                                if r.get("original_language") == lang:
+                                    best_item = r
+                                    break
+                            if best_item:
+                                break
+
+                    # Preference 3: Any matching item with a backdrop
+                    if not best_item:
+                        best_item = next((r for r in results if r.get("backdrop_path")), results[0])
+
+                    title = best_item.get("title") or best_item.get("name") or query.title()
+                    release_date = best_item.get("release_date") or best_item.get("first_air_date") or ""
+                    year = release_date.split("-")[0] if release_date else extracted_year
                     
-                    backdrop = landscape_item.get("backdrop_path")
-                    poster = landscape_item.get("poster_path")
+                    backdrop = best_item.get("backdrop_path")
+                    poster = best_item.get("poster_path")
 
                     # Primary: 16:9 Landscape Backdrop; Fallback: High-res Poster
                     if backdrop:
@@ -145,13 +189,13 @@ async def get_imdb_movie_details(query: str):
                     
                     details["title"] = title
                     details["year"] = year
-                    vote = landscape_item.get("vote_average")
+                    vote = best_item.get("vote_average")
                     if vote:
                         details["rating"] = f"{vote:.1f}"
 
                     # Runtime and Genres
-                    media_type = landscape_item.get("media_type", "movie")
-                    item_id = landscape_item.get("id")
+                    media_type = best_item.get("media_type", "movie")
+                    item_id = best_item.get("id")
                     if item_id:
                         info_url = f"https://api.themoviedb.org/3/{media_type}/{item_id}?api_key={tmdb_key}"
                         try:
