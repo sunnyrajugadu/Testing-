@@ -52,12 +52,26 @@ async def get_imdb_suggestions(query: str, limit: int = 10):
                 if resp.status == 200:
                     data = await resp.json()
                     titles = []
+                    
                     for item in data.get("d", []):
+                        # 1. Cast/Celebrities filter:
+                        # Titles id 'tt' tho start avthundi (actors/directors di 'nm' tho untundi)
+                        item_id = str(item.get("id", ""))
+                        if not item_id.startswith("tt"):
+                            continue
+
+                        # 2. Type filter: actor, actress, audio lantivi exclude cheyadam
+                        entity_type = str(item.get("q", "")).lower()
+                        if entity_type in ["actor", "actress", "soundtrack"]:
+                            continue
+
                         title = item.get("l")
                         if title and title not in titles:
                             titles.append(title)
+
                         if len(titles) >= limit:
                             break
+
                     return titles
     except Exception as e:
         print(f"IMDb Error: {e}")
