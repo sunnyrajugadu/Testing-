@@ -2532,3 +2532,74 @@ async def close_menu_callback(
             await query.answer()
         except Exception:
             pass
+
+
+# ============================================================
+# UPDATED SPELLING & FRANCHISE SELECTION CALLBACK
+# ============================================================
+
+@app.on_callback_query(
+    filters.regex(r"^spell:")
+)
+async def spelling_suggestion_callback(
+    client,
+    query: CallbackQuery
+):
+    """
+    Handles user clicking on IMDb spelling / franchise suggestion button.
+    Extracts the selected movie name, cleans year brackets if needed for DB,
+    and calls execute_search with allow_spelling_suggestions=False so that
+    it displays the HD landscape banner and direct files.
+    """
+    try:
+        parts = query.data.split(":", 2)
+
+        if len(parts) < 3:
+            return await query.answer("❌ Invalid suggestion data", show_alert=True)
+
+        _, user_id_str, selected_movie = parts
+
+        try:
+            target_user_id = int(user_id_str)
+        except ValueError:
+            target_user_id = query.from_user.id
+
+        # Verify button belongs to the requester
+        if query.from_user.id != target_user_id:
+            return await query.answer(
+                "⚠️ This suggestion button is not for you",
+                show_alert=True
+            )
+
+        await query.answer(f"🔎 Searching: {selected_movie}")
+
+        # Get reply message id to link reply preview cleanly
+        reply_to_id = None
+        if query.message and query.message.reply_to_message:
+            reply_to_id = query.message.reply_to_message.id
+
+        # Delete the suggestions buttons menu
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+        from handlers.search import execute_search
+
+        # allow_spelling_suggestions=False guarantees that it directly fetches
+        # the Landscape Banner and sends files without re-triggering suggestions
+        await execute_search(
+            client=client,
+            user=query.from_user,
+            chat_id=query.message.chat.id,
+            movie_name=selected_movie,
+            reply_to_message_id=reply_to_id,
+            allow_spelling_suggestions=False
+        )
+
+    except Exception as e:
+        print(f"❌ SPELL SUGGESTION CALLBACK ERROR: {e}", flush=True)
+        try:
+            await query.answer("❌ Failed to process movie selection", show_alert=True)
+        except Exception:
+            pass
