@@ -88,6 +88,7 @@ async def get_imdb_movie_details(query: str, preferred_lang: str = "te"):
     """
     Fetches high-resolution landscape (16:9) banner image, Title, Year, Rating, Genres, and Runtime.
     Dynamically prioritizes the requested original language (te, en, ta, hi, ml, kn).
+    Guaranteed Fallback: If TMDB returns no image, picks from IMDb/OMDB.
     """
     # Extract year if present in query (e.g. 'Kalki 2019' -> 2019)
     extracted_year = None
@@ -213,46 +214,54 @@ async def get_imdb_movie_details(query: str, preferred_lang: str = "te"):
                                         details["runtime"] = f"{hours}h {mins}m" if hours else f"{mins} min"
                         except Exception:
                             pass
-
-                    return details
     except Exception as e:
         print(f"TMDB Fetch Error: {e}", flush=True)
 
-    # 2. Fallback to IMDb/OMDB metadata if TMDB fails
-    try:
-        first_char = clean_q[0]
-        sugg_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{clean_q}.json"
+    # 2. Fallback to IMDb/OMDB metadata and image if TMDB fails or has no image
+    if not details["image"]:
+        try:
+            first_char = clean_q[0]
+            sugg_url = f"https://v3.sg.media-imdb.com/suggestion/{first_char}/{clean_q}.json"
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(sugg_url, timeout=aiohttp.ClientTimeout(total=3)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    movie_item = None
-                    for item in data.get("d", []):
-                        item_id = str(item.get("id", ""))
-                        if item_id.startswith("tt"):
-                            movie_item = item
-                            break
+            async with aiohttp.ClientSession() as session:
+                async with session.get(sugg_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        movie_item = None
+                        for item in data.get("d", []):
+                            item_id = str(item.get("id", ""))
+                            if item_id.startswith("tt"):
+                                movie_item = item
+                                break
 
-                    if movie_item:
-                        movie_id = movie_item.get("id")
-                        details["title"] = movie_item.get("l") or details["title"]
-                        details["year"] = movie_item.get("y") or details["year"]
-                        if not details["image"] and movie_item.get("i"):
-                            details["image"] = movie_item.get("i", {}).get("imageUrl")
+                        if movie_item:
+                            movie_id = movie_item.get("id")
+                            if not details.get("title") or details["title"] == query.title():
+                                details["title"] = movie_item.get("l") or details["title"]
+                            if not details.get("year"):
+                                details["year"] = movie_item.get("y") or details["year"]
 
-                        api_url = f"https://www.omdbapi.com/?i={movie_id}&apikey=trilogy"
-                        try:
-                            async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=3)) as o_resp:
-                                if o_resp.status == 200:
-                                    omdb_data = await o_resp.json()
-                                    if omdb_data.get("Response") == "True":
-                                        details["rating"] = omdb_data.get("imdbRating", "N/A")
-                                        details["genres"] = omdb_data.get("Genre", "N/A")
-                                        details["runtime"] = omdb_data.get("Runtime", "N/A")
-                        except Exception:
-                            pass
-    except Exception as e:
-        print(f"IMDb Details Fallback Warning: {e}", flush=True)
+                            # Direct IMDb image
+                            if movie_item.get("i"):
+                                details["image"] = movie_item.get("i", {}).get("imageUrl")
+
+                            api_url = f"https://www.omdbapi.com/?i={movie_id}&apikey=trilogy"
+                            try:
+                                async with session.get(api_url, timeout=aiohttp.ClientTimeout(total=3)) as o_resp:
+                                    if o_resp.status == 200:
+                                        omdb_data = await o_resp.json()
+                                        if omdb_data.get("Response") == "True":
+                                            if details["rating"] == "N/A":
+                                                details["rating"] = omdb_data.get("imdbRating", "N/A")
+                                            if details["genres"] == "N/A":
+                                                details["genres"] = omdb_data.get("Genre", "N/A")
+                                            if details["runtime"] == "N/A":
+                                                details["runtime"] = omdb_data.get("Runtime", "N/A")
+                                            if not details["image"] and omdb_data.get("Poster") not in [None, "N/A"]:
+                                                details["image"] = omdb_data.get("Poster")
+                            except Exception:
+                                pass
+        except Exception as e:
+            print(f"IMDb Details Fallback Warning: {e}", flush=True)
 
     return details
