@@ -342,7 +342,7 @@ async def execute_search(
                         cb_data = f"spell:{user_id}:{title[:45]}"
                         suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
 
-                    suggestion_buttons.append([InlineKeyboardButton("✖ CLOSE ✖", callback_data="close")])
+                    suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
 
                     reply_text = (
                         f"🎀\n`{movie_name}`\n\n"
