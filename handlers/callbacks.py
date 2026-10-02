@@ -1146,7 +1146,8 @@ async def fsub_retry_callback(
                 user=query.from_user,
                 chat_id=user_id,
                 movie_name=payload,
-                reply_to_message_id=reply_to_id
+                reply_to_message_id=reply_to_id,
+                allow_spelling_suggestions=True
             )
 
     except Exception as e:
@@ -2422,7 +2423,7 @@ async def back_search(
         )
 
         await query.answer(
-            "↩️ All languages selected"
+            "↩️️ All languages selected"
         )
 
     except Exception as e:
@@ -2481,13 +2482,15 @@ async def spelling_suggestion_callback(
 
         await query.answer(f"🔎 Searching: {selected_movie}")
 
-        # Delete the spelling suggestions menu
+        # Delete the spelling suggestions menu immediately
         try:
             await query.message.delete()
         except Exception:
             pass
 
         # Trigger direct search with selected title
+        # allow_spelling_suggestions=False guarantees that if file is missing in DB,
+        # it directly shows "Oops! I couldn't find" and auto-deletes in 10s!
         from handlers.search import execute_search
 
         reply_to_id = query.message.reply_to_message.id if query.message and query.message.reply_to_message else None
@@ -2497,7 +2500,8 @@ async def spelling_suggestion_callback(
             user=query.from_user,
             chat_id=query.message.chat.id,
             movie_name=selected_movie,
-            reply_to_message_id=reply_to_id
+            reply_to_message_id=reply_to_id,
+            allow_spelling_suggestions=False
         )
 
     except Exception as e:
