@@ -57,13 +57,12 @@ async def set_commands(app):
         [
             # ================= USER COMMANDS ================= #
             BotCommand("start", "Start CinemaVeta"),
-            BotCommand("search", "Search movies"),
             BotCommand("ping", "Check bot ping"),
             BotCommand("usage", "Bot Usage"),
             BotCommand("stats", "Bot statistics"),
+            BotCommand("generate_link", "Gen File Link"),
             # ================= OWNER COMMANDS ================= #
-            BotCommand("owner", "Owner Commands"),
-            BotCommand("generate_link", "Gen File Link")
+            BotCommand("owner", "Owner Commands")
         ]
     )
     print("✅ All bot commands registered", flush=True)
