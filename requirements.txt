@@ -1,0 +1,10 @@
+pyrogram 
+tgcrypto==1.2.5
+motor
+flask
+pymongo
+python-dotenv
+dnspython
+aiohttp
+requests
+psutil
