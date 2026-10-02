@@ -2603,3 +2603,20 @@ async def spelling_suggestion_callback(
             await query.answer("❌ Failed to process movie selection", show_alert=True)
         except Exception:
             pass
+
+
+# ============================================================
+# SEARCH INSTRUCTIONS ALERT CALLBACK
+# ============================================================
+
+@app.on_callback_query(filters.regex(r"^search_instructions$"))
+async def search_instructions_callback(client, query: CallbackQuery):
+    alert_text = (
+        "📝 MOVIE REQUEST FORMAT -\n\n"
+        "Salaar OR Salaar 2023\n\n"
+        "📝 TV SERIES REQUEST FORMAT -\n\n"
+        "Save The Tigers OR Save The Tigers S01E01 OR Save The Tigers S01 E01\n\n"
+        "DON'T USE SYMBOLS....‼️"
+    )
+    await query.answer(alert_text, show_alert=True)
+
