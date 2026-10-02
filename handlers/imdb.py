@@ -11,9 +11,7 @@ from bot import app
 from utils.helpers import normalize_text
 
 
-print("✅ handlers/imdb.py imported (Clean IMDb + TMDB Sync + Reply Format)", flush=True)
-
-TMDB_KEY = "7f43669a428c09611a0518fa9c0bbddb"
+print("✅ handlers/imdb.py imported (Pure IMDb + OMDB Only)", flush=True)
 
 
 # ================= FETCH SUGGESTION TITLES (IMDb) ================= #
@@ -59,7 +57,7 @@ async def fetch_imdb_results(query: str, limit: int = 10):
     return []
 
 
-# ================= FETCH DETAILED MOVIE/SERIES INFO (TMDB + OMDB Sync) ================= #
+# ================= FETCH DETAILED MOVIE/SERIES INFO (Pure IMDb / OMDB) ================= #
 
 async def fetch_full_movie_details(imdb_id: str):
     data = {
@@ -79,98 +77,24 @@ async def fetch_full_movie_details(imdb_id: str):
         "trailer_url": None
     }
 
-    # 1. Fetch from TMDB using IMDb ID (Ensures 100% accurate Title, Release Date, Poster, Runtime, etc.)
+    # 1. Fetch official poster from IMDb suggestion API
     try:
-        find_url = f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={TMDB_KEY}&external_source=imdb_id"
+        prefix = imdb_id[:3] if len(imdb_id) >= 3 else imdb_id
+        sugg_url = f"https://v3.sg.media-imdb.com/suggestion/{prefix}/{imdb_id}.json"
         async with aiohttp.ClientSession() as session:
-            async with session.get(find_url, timeout=aiohttp.ClientTimeout(total=4)) as resp:
-                if resp.status == 200:
-                    t_data = await resp.json()
-                    movie_res = t_data.get("movie_results", [])
-                    tv_res = t_data.get("tv_results", [])
-                    
-                    item = None
-                    media_type = "movie"
-                    if movie_res:
-                        item = movie_res[0]
-                        media_type = "movie"
-                    elif tv_res:
-                        item = tv_res[0]
-                        media_type = "tv"
+            async with session.get(sugg_url, timeout=aiohttp.ClientTimeout(total=3)) as s_resp:
+                if s_resp.status == 200:
+                    s_data = await s_resp.json()
+                    for it in s_data.get("d", []):
+                        if str(it.get("id")) == imdb_id:
+                            img = it.get("i", {}).get("imageUrl")
+                            if img:
+                                data["poster"] = img
+                            break
+    except Exception:
+        pass
 
-                    if item:
-                        data["title"] = item.get("title") or item.get("name") or "N/A"
-                        
-                        date_str = item.get("release_date") or item.get("first_air_date") or "N/A"
-                        if date_str and date_str != "N/A":
-                            data["release_date"] = date_str
-                            data["year"] = date_str.split("-")[0]
-
-                        vote_avg = item.get("vote_average")
-                        if vote_avg and vote_avg > 0:
-                            data["rating"] = round(vote_avg, 1)
-
-                        overview = item.get("overview")
-                        if overview:
-                            data["storyline"] = overview
-
-                        poster_path = item.get("poster_path") or item.get("backdrop_path")
-                        if poster_path:
-                            data["poster"] = f"https://image.tmdb.org/t/p/w780{poster_path}"
-
-                        # Fetch detailed TMDB data for director, genres, runtime/seasons, language, country
-                        tmdb_id = item.get("id")
-                        detail_url = f"https://api.themoviedb.org/3/{media_type}/{tmdb_id}?api_key={TMDB_KEY}&append_to_response=credits,alternative_titles,videos"
-                        async with session.get(detail_url, timeout=aiohttp.ClientTimeout(total=4)) as d_resp:
-                            if d_resp.status == 200:
-                                d_data = await d_resp.json()
-                                
-                                # Runtime or Series formatting
-                                if media_type == "movie":
-                                    rt = d_data.get("runtime")
-                                    if rt:
-                                        data["runtime"] = f"{rt} min"
-                                else:
-                                    seasons = d_data.get("seasons", [])
-                                    season_parts = []
-                                    for s in seasons:
-                                        s_num = s.get("season_number")
-                                        e_count = s.get("episode_count")
-                                        if s_num > 0 and e_count:
-                                            season_parts.append(f"S{s_num:02d} E{e_count:02d}")
-                                    if season_parts:
-                                        data["runtime"] = ", ".join(season_parts)
-
-                                # Genres
-                                data["genres"] = [g.get("name") for g in d_data.get("genres", []) if g.get("name")]
-
-                                # Languages
-                                data["languages"] = [l.get("english_name") for l in d_data.get("spoken_languages", []) if l.get("english_name")]
-
-                                # Countries
-                                data["countries"] = [c.get("name") for c in d_data.get("production_countries", []) if c.get("name")]
-
-                                # Director / Creator
-                                if media_type == "movie":
-                                    crew = d_data.get("credits", {}).get("crew", [])
-                                    directors = [cr.get("name") for cr in crew if cr.get("job") == "Director"]
-                                    if directors:
-                                        data["director"] = ", ".join(directors)
-                                else:
-                                    creators = d_data.get("created_by", [])
-                                    if creators:
-                                        data["director"] = ", ".join([cr.get("name") for cr in creators])
-
-                                # Trailer URL
-                                videos = d_data.get("videos", {}).get("results", [])
-                                for vid in videos:
-                                    if vid.get("site") == "YouTube" and vid.get("type") in ["Trailer", "Teaser"]:
-                                        data["trailer_url"] = f"https://www.youtube.com/watch?v={vid.get('key')}"
-                                        break
-    except Exception as e:
-        print(f"TMDB Fetch Error: {e}", flush=True)
-
-    # 2. Fallback to OMDB if any core field is missing
+    # 2. Fetch full metadata and poster from OMDB
     omdb_url = f"https://www.omdbapi.com/?i={imdb_id}&plot=full&apikey=trilogy"
     try:
         async with aiohttp.ClientSession() as session:
@@ -178,40 +102,41 @@ async def fetch_full_movie_details(imdb_id: str):
                 if resp.status == 200:
                     o_data = await resp.json()
                     if o_data.get("Response") == "True":
-                        if data["title"] == "N/A":
-                            data["title"] = o_data.get("Title", "N/A")
-                        if data["year"] == "N/A":
-                            data["year"] = o_data.get("Year", "N/A")
-                        if data["rating"] == "N/A":
-                            data["rating"] = o_data.get("imdbRating", "N/A")
-                        if data["release_date"] == "N/A":
-                            data["release_date"] = o_data.get("Released", "N/A")
-                        if data["director"] == "N/A":
-                            data["director"] = o_data.get("Director", "N/A")
-                        if not data["genres"]:
-                            g = o_data.get("Genre", "")
-                            data["genres"] = [x.strip() for x in g.split(",") if x.strip() and x.strip() != "N/A"]
-                        if not data["languages"]:
-                            l = o_data.get("Language", "")
-                            data["languages"] = [x.strip() for x in l.split(",") if x.strip() and x.strip() != "N/A"]
-                        if not data["countries"]:
-                            c = o_data.get("Country", "")
-                            data["countries"] = [x.strip() for x in c.split(",") if x.strip() and x.strip() != "N/A"]
-                        if data["storyline"] == "No storyline available.":
-                            plot = o_data.get("Plot")
-                            if plot and plot != "N/A":
-                                data["storyline"] = plot
-                        if not data["poster"]:
-                            poster = o_data.get("Poster")
-                            if poster and poster != "N/A":
-                                data["poster"] = poster
-    except Exception as e:
-        print(f"OMDB Fallback Error: {e}", flush=True)
+                        data["title"] = o_data.get("Title", "N/A")
+                        data["year"] = o_data.get("Year", "N/A")
+                        data["rating"] = o_data.get("imdbRating", "N/A")
+                        data["release_date"] = o_data.get("Released", "N/A")
+                        data["runtime"] = o_data.get("Runtime", "N/A")
+                        data["director"] = o_data.get("Director", "N/A")
 
-    # Trailer fallback
-    if not data["trailer_url"]:
-        clean_name = data["title"].replace(" ", "+")
-        data["trailer_url"] = f"https://www.youtube.com/results?search_query={clean_name}+{data['year']}+official+trailer"
+                        # Series totalSeasons check for runtime formatting if available
+                        total_seasons = o_data.get("totalSeasons")
+                        if total_seasons and total_seasons != "N/A":
+                            data["runtime"] = f"{total_seasons} Seasons"
+
+                        g = o_data.get("Genre", "")
+                        data["genres"] = [x.strip() for x in g.split(",") if x.strip() and x.strip() != "N/A"]
+
+                        l = o_data.get("Language", "")
+                        data["languages"] = [x.strip() for x in l.split(",") if x.strip() and x.strip() != "N/A"]
+
+                        c = o_data.get("Country", "")
+                        data["countries"] = [x.strip() for x in c.split(",") if x.strip() and x.strip() != "N/A"]
+
+                        plot = o_data.get("Plot")
+                        if plot and plot != "N/A" and plot != "N/A.":
+                            data["storyline"] = plot
+
+                        poster = o_data.get("Poster")
+                        if not data["poster"] and poster and poster != "N/A":
+                            # High resolution adjustment for OMDB poster if possible
+                            data["poster"] = poster.replace("_V1_SX300.jpg", "_V1_SX780.jpg")
+    except Exception as e:
+        print(f"IMDb OMDB Fetch Error: {e}", flush=True)
+
+    # YouTube Trailer search query link
+    clean_name = data["title"].replace(" ", "+")
+    data["trailer_url"] = f"https://www.youtube.com/results?search_query={clean_name}+{data['year']}+official+trailer"
 
     return data
 
@@ -302,6 +227,9 @@ async def imdb_view_callback(client, query: CallbackQuery):
         # Clickable Hyperlink Title (Direct IMDb Link)
         title_link = f'<a href="{info["imdb_url"]}"><b>{html.escape(info["title"])} [{html.escape(str(info["year"]))}]</b></a>'
 
+        # Release Info handling (If full date is N/A, fallback to Year)
+        release_info = info["release_date"] if info["release_date"] != "N/A" else info["year"]
+
         caption_lines = [
             f"🎬 {title_link}\n"
         ]
@@ -311,7 +239,7 @@ async def imdb_view_callback(client, query: CallbackQuery):
 
         caption_lines.extend([
             f"⭐ <b>IMDb Rating :</b> {rating_disp}",
-            f"🗓 <b>Release Info :</b> {info['release_date'] if info['release_date'] != 'N/A' else info['year']}",
+            f"🗓 <b>Release Info :</b> {release_info}",
             f"⏳ <b>Runtime :</b> {info['runtime']}",
             f"🎥 <b>Directed By :</b> {info['director']}",
             f"🎭 <b>Genre :</b> {genre_str}",
