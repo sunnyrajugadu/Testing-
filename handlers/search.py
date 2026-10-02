@@ -305,15 +305,50 @@ async def execute_search(
     reply_to_message_id=None,
     allow_spelling_suggestions=True
 ):
-    """
-    Executes search and sends the files. Can be called from message handler or callback.
-    """
     start_time = time.time()
     try:
         user_id = user.id
         print(f"🔍 SEARCH : {movie_name}", flush=True)
 
         asyncio.create_task(increase_search_count(user_id))
+
+        # Check for franchise / multi-part suggestions first (e.g. Baahubali, Pushpa, Tuck)
+        if allow_spelling_suggestions:
+            suggestions = await get_imdb_suggestions(movie_name, limit=6)
+            
+            if suggestions and len(suggestions) > 1:
+                query_words = len(movie_name.strip().split())
+                has_exact_match = any(
+                    movie_name.strip().lower() == s.lower().strip() 
+                    or movie_name.strip().lower() == s.split("(")[0].strip().lower()
+                    for s in suggestions
+                )
+
+                # Show suggestions for short broad queries or franchise names
+                if query_words <= 2 or not has_exact_match:
+                    suggestion_buttons = []
+                    for title in suggestions:
+                        cb_data = f"spell:{user_id}:{title[:45]}"
+                        suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
+
+                    suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
+
+                    reply_text = (
+                        f"🎬 **Did you mean one of these movies?**\n\n"
+                        f"🔍 Request: `{movie_name}`\n\n"
+                        "👇 **Please select the exact movie below:**"
+                    )
+
+                    spell_msg = await client.send_message(
+                        chat_id=chat_id,
+                        text=reply_text,
+                        reply_markup=InlineKeyboardMarkup(suggestion_buttons),
+                        reply_to_message_id=reply_to_message_id
+                    )
+
+                    if spell_msg:
+                        asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=45))
+                    return
 
         results = await search_files(movie_name)
 
@@ -334,37 +369,32 @@ async def execute_search(
 
         # ================= NO RESULTS ================= #
         if not results:
-            # Show IMDb spelling suggestions if enabled
-            if allow_spelling_suggestions:
-                suggestions = await get_imdb_suggestions(movie_name, limit=10)
+            suggestions = await get_imdb_suggestions(movie_name, limit=8)
+            if suggestions and allow_spelling_suggestions:
+                suggestion_buttons = []
+                for title in suggestions:
+                    cb_data = f"spell:{user_id}:{title[:45]}"
+                    suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
 
-                if suggestions:
-                    suggestion_buttons = []
-                    for title in suggestions:
-                        cb_data = f"spell:{user_id}:{title[:45]}"
-                        suggestion_buttons.append([InlineKeyboardButton(title, callback_data=cb_data)])
+                suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
 
-                    suggestion_buttons.append([InlineKeyboardButton("✘ CLOSE ✘", callback_data="close")])
+                reply_text = (
+                    f"🎀\n`{movie_name}`\n\n"
+                    "**Spelling Mistake Bro ‼️**\n\n"
+                    "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
+                )
 
-                    reply_text = (
-                        f"🎀\n`{movie_name}`\n\n"
-                        "**Spelling Mistake Bro ‼️**\n\n"
-                        "**DON'T WORRY 😊 CHOOSE THE CORRECT ONE BELOW 👇**"
-                    )
+                spell_msg = await client.send_message(
+                    chat_id=chat_id,
+                    text=reply_text,
+                    reply_markup=InlineKeyboardMarkup(suggestion_buttons),
+                    reply_to_message_id=reply_to_message_id
+                )
 
-                    spell_msg = await client.send_message(
-                        chat_id=chat_id,
-                        text=reply_text,
-                        reply_markup=InlineKeyboardMarkup(suggestion_buttons),
-                        reply_to_message_id=reply_to_message_id
-                    )
+                if spell_msg:
+                    asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=30))
+                return
 
-                    # Auto-delete suggestions after 30 seconds
-                    if spell_msg:
-                        asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=30))
-                    return
-
-            # Fallback message when suggestions are disabled or unavailable
             no_result_message = await client.send_message(
                 chat_id=chat_id,
                 text=f"""
@@ -375,25 +405,22 @@ async def execute_search(
                 reply_to_message_id=reply_to_message_id
             )
 
-            # Auto-delete error message after 10 seconds
             if no_result_message:
                 asyncio.create_task(auto_delete_message(no_result_message, delay_seconds=10))
 
             return
 
-        # ================= SEARCH METRICS & IMDB DETAILS ================= #
+        # ================= SEARCH METRICS & DETAILS ================= #
         elapsed_sec = f"{time.time() - start_time:.2f}"
         total_files_count = len(results)
 
-        # Clickable user profile
         user_name = user.first_name or "User"
         user_mention = f'<a href="tg://user?id={user.id}"><b>{html.escape(user_name)}</b></a>'
 
-        # Fetch IMDb Data (Poster, Rating, Runtime, Genres)
-        imdb_data = await get_imdb_movie_details(movie_name)
-        poster_url = imdb_data.get("image") if imdb_data else None
+        # Fetch Landscape Movie Banner & Details
+        movie_details = await get_imdb_movie_details(movie_name)
+        landscape_banner_url = movie_details.get("image") if movie_details else None
 
-        # Detect Available Audios in Files
         detected_audios = set()
         for f in results:
             aud = format_audio(f.get("audio"))
@@ -401,25 +428,25 @@ async def execute_search(
                 detected_audios.update([a.strip() for a in aud.split(",") if a.strip()])
         audio_str = ", ".join(list(detected_audios)[:4]) if detected_audios else "Multi"
 
-        # Build Caption matching the exact request layout
+        # Build Caption matching the requested layout
         caption_lines = [
             f"🌟✨ <b>Movie Request:</b> <code>{html.escape(movie_name)}</code> 🪄\n"
         ]
 
-        if imdb_data and imdb_data.get("title"):
-            m_title = imdb_data['title']
-            if imdb_data.get("year"):
-                m_title += f" ({imdb_data['year']})"
+        if movie_details and movie_details.get("title"):
+            m_title = movie_details['title']
+            if movie_details.get("year"):
+                m_title += f" ({movie_details['year']})"
             caption_lines.append(f"🎬 <b>{html.escape(m_title)}</b>\n")
 
-            if imdb_data.get("rating") and imdb_data["rating"] != "N/A":
-                caption_lines.append(f"⭐ <b>RATING :</b> <code>{imdb_data['rating']} / 10</code>")
+            if movie_details.get("rating") and movie_details["rating"] != "N/A":
+                caption_lines.append(f"⭐ <b>RATING :</b> <code>{movie_details['rating']} / 10</code>")
 
-            if imdb_data.get("genres") and imdb_data["genres"] != "N/A":
-                caption_lines.append(f"🎭 <b>GENRE :</b> <code>{imdb_data['genres']}</code>")
+            if movie_details.get("genres") and movie_details["genres"] != "N/A":
+                caption_lines.append(f"🎭 <b>GENRE :</b> <code>{movie_details['genres']}</code>")
 
-            if imdb_data.get("runtime") and imdb_data["runtime"] != "N/A":
-                caption_lines.append(f"⏳ <b>RUN TIME :</b> <code>{imdb_data['runtime']}</code>")
+            if movie_details.get("runtime") and movie_details["runtime"] != "N/A":
+                caption_lines.append(f"⏳ <b>RUN TIME :</b> <code>{movie_details['runtime']}</code>")
 
             caption_lines.append(f"🔊 <b>AUDIO :</b> <code>{audio_str}</code>\n")
 
@@ -452,7 +479,6 @@ async def execute_search(
                 [build_file_button(file, user_id, menu_timestamp)]
             )
 
-        # ================= LANGUAGE BUTTONS ================= #
         buttons.extend(
             language_buttons(
                 search_id=search_id,
@@ -461,7 +487,6 @@ async def execute_search(
             )
         )
 
-        # ================= SEND ALL ================= #
         buttons.append(
             [
                 InlineKeyboardButton(
@@ -476,7 +501,6 @@ async def execute_search(
             ]
         )
 
-        # ================= PAGINATION ================= #
         buttons.extend(
             pagination_buttons(
                 search_id,
@@ -488,20 +512,20 @@ async def execute_search(
 
         reply_markup = InlineKeyboardMarkup(buttons)
 
-        # ================= SEND PHOTO OR FALLBACK TEXT ================= #
+        # ================= SEND ONLY LANDSCAPE BANNER ================= #
         sent_success = False
-        if poster_url:
+        if landscape_banner_url:
             try:
                 await client.send_photo(
                     chat_id=chat_id,
-                    photo=poster_url,
+                    photo=landscape_banner_url,
                     caption=final_caption,
                     reply_markup=reply_markup,
                     reply_to_message_id=reply_to_message_id
                 )
                 sent_success = True
             except Exception as pe:
-                print(f"⚠️ Photo dispatch failed ({pe}), falling back to text...", flush=True)
+                print(f"⚠️ Landscape photo dispatch failed ({pe}), falling back to text...", flush=True)
 
         if not sent_success:
             await client.send_message(
@@ -511,7 +535,7 @@ async def execute_search(
                 reply_to_message_id=reply_to_message_id
             )
 
-        print("✅ SEARCH RESULT SENT", flush=True)
+        print("✅ SEARCH RESULT SENT WITH LANDSCAPE BANNER", flush=True)
 
     except Exception as e:
         print(f"❌ SEARCH ERROR : {e}", flush=True)
@@ -578,7 +602,7 @@ async def search_movie_handler(
         if not await enforce_fsub(client, message, payload=movie_name):
             return
 
-        # Execute search without reaction
+        # Execute search with franchise suggestion triggers
         await execute_search(
             client=client,
             user=message.from_user,
