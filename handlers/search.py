@@ -301,8 +301,7 @@ async def execute_search(
     chat_id,
     movie_name,
     reply_to_message_id=None,
-    allow_spelling_suggestions=True,
-    original_message: Message = None
+    allow_spelling_suggestions=True
 ):
     """
     Executes search and sends the files. Can be called from message handler or callback.
@@ -315,7 +314,7 @@ async def execute_search(
 
         results = await search_files(movie_name)
 
-        # Okavela brackets unte (e.g. Varsham (2004)), bracket loni year theesi clean name tho DB check chesthundi
+        # Fallback search without year brackets if initial query returns empty
         if not results and "(" in movie_name:
             clean_name = movie_name.split("(")[0].strip()
             if clean_name:
@@ -332,7 +331,7 @@ async def execute_search(
 
         # ================= NO RESULTS ================= #
         if not results:
-            # 1. Spelling suggestions show cheyadam (allow_spelling_suggestions True unte)
+            # Show IMDb spelling suggestions if enabled
             if allow_spelling_suggestions:
                 suggestions = await get_imdb_suggestions(movie_name, limit=10)
 
@@ -357,12 +356,12 @@ async def execute_search(
                         reply_to_message_id=reply_to_message_id
                     )
 
-                    # 30 SECONDS LO AUTOMATIC DELETE
+                    # Auto-delete suggestions after 30 seconds
                     if spell_msg:
                         asyncio.create_task(auto_delete_message(spell_msg, delay_seconds=30))
                     return
 
-            # 2. Suggestions click chesaka file DB lo lekapothe No Results message chupisthundi
+            # Fallback message when suggestions are disabled or unavailable
             no_result_message = await client.send_message(
                 chat_id=chat_id,
                 text=f"""
@@ -373,26 +372,13 @@ async def execute_search(
                 reply_to_message_id=reply_to_message_id
             )
 
-            # 10 SECONDS LO AUTOMATIC DELETE
+            # Auto-delete error message after 10 seconds
             if no_result_message:
                 asyncio.create_task(auto_delete_message(no_result_message, delay_seconds=10))
 
             return
 
-        # ================= MOVIE UNTE MATHRAME REACTION ================= #
-        # Message object unte direct ga react chesthundhi (Idi 100% fail avvadhu)
-        if original_message:
-            try:
-                await original_message.react("🔥")
-            except Exception:
-                pass
-        elif reply_to_message_id:
-            try:
-                await client.send_reaction(chat_id=chat_id, message_id=reply_to_message_id, emoji="🔥")
-            except Exception:
-                pass
-
-        # ================= SEARCH ID ================= #
+        # ================= SEARCH ID & CACHING ================= #
         search_id = str(uuid.uuid4())
         menu_timestamp = int(datetime.now().timestamp())
 
@@ -446,7 +432,7 @@ async def execute_search(
             )
         )
 
-        # ================= SEND RESULT (WITH REPLY PREVIEW) ================= #
+        # ================= SEND SEARCH RESULTS ================= #
         await client.send_message(
             chat_id=chat_id,
             text=f"""
@@ -521,19 +507,18 @@ async def search_movie_handler(
         if not movie_name:
             return
 
-        # ================= ONE-LINE FSUB ENFORCEMENT ================= #
+        # ================= FORCE SUBSCRIBE VERIFICATION ================= #
         if not await enforce_fsub(client, message, payload=movie_name):
             return
 
-        # Run Search with original message passed for reaction
+        # Execute search without reaction
         await execute_search(
             client=client,
             user=message.from_user,
             chat_id=message.chat.id,
             movie_name=movie_name,
             reply_to_message_id=message.id,
-            allow_spelling_suggestions=True,
-            original_message=message
+            allow_spelling_suggestions=True
         )
 
     except Exception as e:
