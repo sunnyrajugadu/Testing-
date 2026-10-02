@@ -11,7 +11,10 @@ from bot import app
 from utils.helpers import normalize_text
 
 
-print("✅ handlers/imdb.py imported (Pure IMDb)", flush=True)
+print("✅ handlers/imdb.py imported (Pure IMDb Interactive Flow)", flush=True)
+
+# State to store users who triggered /imdb and are waiting to send the movie name
+IMDB_AWAITING_INPUT = {}
 
 
 # ================= FETCH SUGGESTION TITLES (IMDb) ================= #
@@ -108,7 +111,7 @@ async def fetch_full_movie_details(imdb_id: str):
                         data["release_date"] = o_data.get("Released", "N/A")
                         data["runtime"] = o_data.get("Runtime", "N/A")
                         data["director"] = o_data.get("Director", "N/A")
-                        
+
                         g = o_data.get("Genre", "")
                         data["genres"] = [x.strip() for x in g.split(",") if x.strip() and x.strip() != "N/A"]
 
@@ -135,61 +138,118 @@ async def fetch_full_movie_details(imdb_id: str):
     return data
 
 
-# ================= ONLY /imdb COMMAND HANDLER ================= #
+# ================= STEP 1: /imdb COMMAND TRIGGER ================= #
 
-@app.on_message(filters.command(["imdb"]))
+@app.on_message(filters.private & filters.command(["imdb"]))
 async def imdb_search_command(client, message: Message):
     try:
+        user_id = message.from_user.id
         parts = message.text.split(maxsplit=1)
-        if len(parts) < 2:
-            return await message.reply_text(
-                "💡 <b>Usage Guide :</b>\n"
-                "» <code>/imdb &lt;movie_name&gt;</code>\n"
-                "» <i>Example :</i> <code>/imdb Salaar</code>",
-                quote=True
-            )
 
-        query = parts[1].strip()
-        search_msg = await message.reply_text("⚡ <b>Searching IMDb database...</b>", quote=True)
+        # Direct argument unte ventane search execute avtundi (e.g., /imdb Salaar)
+        if len(parts) > 1:
+            query = parts[1].strip()
+            return await process_imdb_flow(client, message, query)
 
-        results = await fetch_imdb_results(query, limit=10)
-        if not results:
-            return await search_msg.edit_text(f"🥀 <b>No matching results found for :</b> <code>{html.escape(query)}</code>")
-
-        # Clean text buttons without emojis
-        buttons = []
-        for item in results:
-            btn_text = f"{item['title'][:40]} - {item['year']}"
-            buttons.append([
-                InlineKeyboardButton(
-                    text=btn_text,
-                    callback_data=f"imdb_view:{item['id']}"
-                )
-            ])
-
-        buttons.append([
-            InlineKeyboardButton("Close", callback_data="close")
+        # Argument lekapothe movie name kosam prompt adugutundi
+        cancel_button = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✘ Cancel ✘", callback_data=f"imdb_cancel:{user_id}")]
         ])
 
-        header_text = (
-            f"🎯 <b>Matched Results For :</b> <code>{html.escape(query.title())}</code>\n"
-            f"<i>👇 Choose the exact title below to view full details :</i>"
+        prompt_msg = await message.reply_text(
+            "🎬 <b>Enter the movie or series name to get IMDb details:</b>",
+            reply_markup=cancel_button,
+            quote=True
         )
 
-        await search_msg.edit_text(
-            text=header_text,
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        IMDB_AWAITING_INPUT[user_id] = prompt_msg.id
 
     except Exception as e:
         print(f"IMDb Command Error: {e}", flush=True)
         try:
-            await message.reply_text("⚠️ Something went wrong while searching IMDb.", quote=True)
+            await message.reply_text("⚠️ Something went wrong while processing /imdb command.", quote=True)
         except Exception:
             pass
 
 
-# ================= CALLBACK FOR MOVIE CARD ================= #
+# ================= STEP 2: INTERCEPT USER INPUT ================= #
+# group=-1 prioritizes this before normal movie search handler runs
+
+@app.on_message(filters.private & filters.text & ~filters.command(["start", "imdb"]), group=-1)
+async def intercept_imdb_text(client, message: Message):
+    user_id = message.from_user.id
+
+    if user_id in IMDB_AWAITING_INPUT:
+        prompt_msg_id = IMDB_AWAITING_INPUT.pop(user_id, None)
+
+        if prompt_msg_id:
+            try:
+                await client.delete_messages(chat_id=message.chat.id, message_ids=prompt_msg_id)
+            except Exception:
+                pass
+
+        query = (message.text or "").strip()
+        await process_imdb_flow(client, message, query)
+
+        # Stop propagation to prevent search.py from searching files in database
+        message.stop_propagation()
+
+
+# ================= STEP 3: SEARCH AND DISPLAY MATCHED BUTTONS ================= #
+
+async def process_imdb_flow(client, message: Message, query: str):
+    search_msg = await message.reply_text("⚡ <b>Searching IMDb database...</b>", quote=True)
+
+    results = await fetch_imdb_results(query, limit=10)
+    if not results:
+        return await search_msg.edit_text(f"🥀 <b>No matching results found for :</b> <code>{html.escape(query)}</code>")
+
+    # Clean text buttons without emojis
+    buttons = []
+    for item in results:
+        btn_text = f"{item['title'][:40]} - {item['year']}"
+        buttons.append([
+            InlineKeyboardButton(
+                text=btn_text,
+                callback_data=f"imdb_view:{item['id']}"
+            )
+        ])
+
+    buttons.append([
+        InlineKeyboardButton("Close", callback_data="close")
+    ])
+
+    header_text = (
+        f"🎯 <b>Matched Results For :</b> <code>{html.escape(query.title())}</code>\n"
+        f"<i>👇 Choose the exact title below to view full details :</i>"
+    )
+
+    await search_msg.edit_text(
+        text=header_text,
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+
+# ================= STEP 4: CANCEL BUTTON CALLBACK ================= #
+
+@app.on_callback_query(filters.regex(r"^imdb_cancel:(.*)"))
+async def imdb_cancel_callback(client, query: CallbackQuery):
+    try:
+        target_user_id = int(query.data.split(":", 1)[1])
+        if query.from_user.id != target_user_id:
+            return await query.answer("⚠️ This button is not for you.", show_alert=True)
+
+        IMDB_AWAITING_INPUT.pop(query.from_user.id, None)
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+        await query.answer("IMDb search cancelled.")
+    except Exception as e:
+        print(f"IMDb Cancel Error: {e}", flush=True)
+
+
+# ================= STEP 5: CALLBACK FOR MOVIE CARD ================= #
 
 @app.on_callback_query(filters.regex(r"^imdb_view:(.*)"))
 async def imdb_view_callback(client, query: CallbackQuery):
@@ -228,7 +288,7 @@ async def imdb_view_callback(client, query: CallbackQuery):
 
         caption_lines.extend([
             f"⭐ <b>IMDb Rating :</b> <code>{rating_disp}</code>",
-            f"🗓️ <b>Release Date :</b> <code>{info['release_date']}</code>",
+            f"🗓️️ <b>Release Date :</b> <code>{info['release_date']}</code>",
             f"⏳ <b>Runtime :</b> <code>{info['runtime']}</code>",
             f"🎥 <b>Directed By :</b> <code>{info['director']}</code>",
             f"🎭 <b>Genre :</b> {genre_str}",
